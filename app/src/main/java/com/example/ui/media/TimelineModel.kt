@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** A video file the user imported. */
+/** A video file the user imported (a private copy in app storage). */
 data class Source(val uri: Uri, val durationMs: Long)
 
 /** One piece of a source video, in source time (ms). [source] is the index into the sources list. */
@@ -31,9 +31,12 @@ data class MusicTrack(
     val lengthMs: Long get() = outMs - inMs
 }
 
+/** Which track the tool bar acts on. */
+enum class ActiveTrack { VIDEO, MUSIC }
+
 /**
  * Timeline state.
- * The timeline is a list of segments (from one or more imported videos) played one after another.
+ * The video timeline is a list of segments (from one or more imported videos) played one after another.
  * Times in the public API are timeline time (ms) unless stated otherwise.
  */
 object TimelineModel {
@@ -47,6 +50,9 @@ object TimelineModel {
 
     private val _selected = MutableStateFlow(-1)
     val selected: StateFlow<Int> = _selected.asStateFlow()
+
+    private val _activeTrack = MutableStateFlow(ActiveTrack.VIDEO)
+    val activeTrack: StateFlow<ActiveTrack> = _activeTrack.asStateFlow()
 
     private val _playheadMs = MutableStateFlow(0L)
     val playheadMs: StateFlow<Long> = _playheadMs.asStateFlow()
@@ -74,6 +80,10 @@ object TimelineModel {
     val totalDurationMs: Long
         get() = _segments.value.sumOf { it.durationMs }
 
+    fun setActiveTrack(track: ActiveTrack) {
+        _activeTrack.value = track
+    }
+
     /** Adds an imported video to the end of the timeline. */
     fun addSource(uri: Uri, durationMs: Long) {
         if (durationMs <= 0L) return
@@ -82,15 +92,16 @@ object TimelineModel {
         commit(_segments.value + Segment(index, 0L, durationMs))
     }
 
-    /** Clears everything (all videos, music, undo history). */
-    fun clearAll() {
-        _sources.value = emptyList()
-        _segments.value = emptyList()
-        _music.value = null
+    /** Replaces the whole project (used when loading a saved project). */
+    fun restore(sources: List<Source>, segments: List<Segment>, music: MusicTrack?) {
+        _sources.value = sources
+        _segments.value = segments
+        _music.value = music
         undoStack.clear()
         redoStack.clear()
         clipboard = emptyList()
         _selected.value = -1
+        _activeTrack.value = ActiveTrack.VIDEO
         _playheadMs.value = 0L
         _isPlaying.value = false
         updateFlags()
@@ -108,6 +119,7 @@ object TimelineModel {
 
     fun removeMusic() {
         _music.value = null
+        if (_activeTrack.value == ActiveTrack.MUSIC) _activeTrack.value = ActiveTrack.VIDEO
     }
 
     /** Moves the music start by [deltaMs] on the timeline. */
@@ -115,6 +127,28 @@ object TimelineModel {
         val m = _music.value ?: return
         val newOffset = (m.offsetMs + deltaMs).coerceIn(0L, totalDurationMs)
         _music.value = m.copy(offsetMs = newOffset)
+    }
+
+    /** Moves the music's start edge by [deltaMs]. The music keeps its position on the timeline. */
+    fun trimMusicStartBy(deltaMs: Long) {
+        val m = _music.value ?: return
+        val lo = maxOf(-m.inMs, -m.offsetMs)
+        val hi = m.lengthMs - MIN_SEGMENT_MS
+        if (hi < lo) return
+        val d = deltaMs.coerceIn(lo, hi)
+        if (d == 0L) return
+        _music.value = m.copy(offsetMs = m.offsetMs + d, inMs = m.inMs + d)
+    }
+
+    /** Moves the music's end edge by [deltaMs]. */
+    fun trimMusicEndBy(deltaMs: Long) {
+        val m = _music.value ?: return
+        val lo = MIN_SEGMENT_MS - m.lengthMs
+        val hi = m.fileDurationMs - m.outMs
+        if (hi < lo) return
+        val d = deltaMs.coerceIn(lo, hi)
+        if (d == 0L) return
+        _music.value = m.copy(outMs = m.outMs + d)
     }
 
     /** Cuts the music start at the playhead (only if the playhead is inside the music). */
@@ -165,7 +199,10 @@ object TimelineModel {
     }
 
     fun selectAtTime(ms: Long) {
-        if (_segments.value.isNotEmpty()) _selected.value = locate(ms).first
+        if (_segments.value.isNotEmpty()) {
+            _selected.value = locate(ms).first
+            _activeTrack.value = ActiveTrack.VIDEO
+        }
     }
 
     private fun updateFlags() {
