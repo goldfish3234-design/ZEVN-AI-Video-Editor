@@ -5,38 +5,94 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
-/** Everything needed to rebuild the editor after the app is closed. */
+/** Everything needed to rebuild one project in the editor. */
 data class ProjectState(
+    val name: String,
     val sources: List<Source>,
     val segments: List<Segment>,
-    val music: MusicTrack?,
-    val videoVolume: Float
+    val music: MusicTrack?
 )
 
+/** One row in the Drafts list. */
+data class ProjectSummary(val id: String, val name: String, val updatedAt: Long)
+
 /**
- * Saves and loads the project as a JSON file in app storage.
- * Imported media is copied into app storage first, so it stays available after restart.
+ * Stores many projects. Each project lives in its own folder under filesDir/projects/<id>/
+ * with project.json and its media copies, so creating a new project never overwrites an old one.
  */
 object ProjectStore {
 
-    private fun projectFile(context: Context) = File(context.filesDir, "project.json")
+    private var currentId: String? = null
+    var currentName: String = "Untitled"
+        private set
 
-    private fun mediaDir(context: Context): File =
-        File(context.filesDir, "media").apply { mkdirs() }
+    private fun rootDir(context: Context): File =
+        File(context.filesDir, "projects").apply { mkdirs() }
 
-    /** Copies a picked file into app storage and returns a file:// Uri for the copy. Call from a background thread. */
+    private fun projectDir(context: Context, id: String): File =
+        File(rootDir(context), id).apply { mkdirs() }
+
+    private fun pointerFile(context: Context) = File(context.filesDir, "current_project.txt")
+
+    /** The id of the project being edited. Creates one if none exists yet. */
+    private fun ensureCurrent(context: Context): String {
+        currentId?.let { return it }
+        val saved = pointerFile(context).takeIf { it.exists() }?.readText()?.trim()
+        val id = if (!saved.isNullOrEmpty() && File(rootDir(context), saved).exists()) saved else UUID.randomUUID().toString()
+        setCurrent(context, id)
+        return id
+    }
+
+    private fun setCurrent(context: Context, id: String) {
+        currentId = id
+        pointerFile(context).writeText(id)
+    }
+
+    /** Starts a new, empty project. The previous project stays saved in Drafts. */
+    fun newProject(context: Context, name: String) {
+        val id = UUID.randomUUID().toString()
+        projectDir(context, id)
+        setCurrent(context, id)
+        currentName = name
+    }
+
+    /** Opens a saved project and returns its state, or null if it cannot be read. */
+    fun open(context: Context, id: String): ProjectState? {
+        setCurrent(context, id)
+        val state = read(context, id)
+        if (state != null) currentName = state.name
+        return state
+    }
+
+    /** Loads the current project (used when the editor opens and the timeline is empty). */
+    fun loadCurrent(context: Context): ProjectState? {
+        val id = ensureCurrent(context)
+        val state = read(context, id)
+        if (state != null) currentName = state.name
+        return state
+    }
+
+    /** Copies a picked file into the current project's folder. Call from a background thread. */
     fun importCopy(context: Context, uri: Uri, tag: String): Uri {
-        val dest = File(mediaDir(context), "${tag}_${System.nanoTime()}")
+        val dir = projectDir(context, ensureCurrent(context))
+        val dest = File(dir, "${tag}_${System.nanoTime()}")
         val input = context.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Cannot read the selected file")
         input.use { src -> dest.outputStream().use { out -> src.copyTo(out) } }
         return Uri.fromFile(dest)
     }
 
+    /** Folder for files created by the app for the current project (e.g. extracted audio). */
+    fun currentMediaDir(context: Context): File = projectDir(context, ensureCurrent(context))
+
     fun save(context: Context, state: ProjectState) {
+        val id = ensureCurrent(context)
+        currentName = state.name
         val root = JSONObject()
-        root.put("videoVolume", state.videoVolume.toDouble())
+        root.put("name", state.name)
+        root.put("updatedAt", System.currentTimeMillis())
 
         val sources = JSONArray()
         for (s in state.sources) {
@@ -51,6 +107,7 @@ object ProjectStore {
                     .put("source", s.source)
                     .put("startMs", s.startMs)
                     .put("endMs", s.endMs)
+                    .put("volume", s.volume.toDouble())
             )
         }
         root.put("segments", segments)
@@ -69,12 +126,36 @@ object ProjectStore {
             )
         }
 
-        projectFile(context).writeText(root.toString())
+        File(projectDir(context, id), "project.json").writeText(root.toString())
     }
 
-    /** Returns the saved project, or null if there is none or it cannot be read. */
-    fun load(context: Context): ProjectState? {
-        val file = projectFile(context)
+    /** All saved projects, newest first. */
+    fun list(context: Context): List<ProjectSummary> {
+        val out = mutableListOf<ProjectSummary>()
+        for (dir in rootDir(context).listFiles().orEmpty()) {
+            val f = File(dir, "project.json")
+            if (!dir.isDirectory || !f.exists()) continue
+            try {
+                val o = JSONObject(f.readText())
+                out.add(ProjectSummary(dir.name, o.optString("name", "Untitled"), o.optLong("updatedAt", 0L)))
+            } catch (e: Exception) {
+                // skip unreadable projects
+            }
+        }
+        return out.sortedByDescending { it.updatedAt }
+    }
+
+    /** Deletes a saved project and its media. */
+    fun delete(context: Context, id: String) {
+        projectDir(context, id).deleteRecursively()
+        if (currentId == id) {
+            currentId = null
+            pointerFile(context).delete()
+        }
+    }
+
+    private fun read(context: Context, id: String): ProjectState? {
+        val file = File(projectDir(context, id), "project.json")
         if (!file.exists()) return null
         return try {
             val root = JSONObject(file.readText())
@@ -90,7 +171,14 @@ object ProjectStore {
             val segArr = root.optJSONArray("segments") ?: JSONArray()
             for (i in 0 until segArr.length()) {
                 val o = segArr.getJSONObject(i)
-                segments.add(Segment(o.getInt("source"), o.getLong("startMs"), o.getLong("endMs")))
+                segments.add(
+                    Segment(
+                        source = o.getInt("source"),
+                        startMs = o.getLong("startMs"),
+                        endMs = o.getLong("endMs"),
+                        volume = o.optDouble("volume", 1.0).toFloat()
+                    )
+                )
             }
 
             val music = if (root.has("music")) {
@@ -108,10 +196,10 @@ object ProjectStore {
             }
 
             ProjectState(
+                name = root.optString("name", "Untitled"),
                 sources = sources,
                 segments = segments,
-                music = music,
-                videoVolume = root.optDouble("videoVolume", 1.0).toFloat()
+                music = music
             )
         } catch (e: Exception) {
             null
