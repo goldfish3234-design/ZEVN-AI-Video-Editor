@@ -42,7 +42,7 @@ class TimelineExporter(private val context: Context) {
     private var transformer: Transformer? = null
     private val progressHolder = ProgressHolder()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var silenceFile: File? = null
+    private val silenceFiles = mutableListOf<File>()
 
     /** Progress 0..100 while exporting. */
     fun progress(): Int {
@@ -55,7 +55,7 @@ class TimelineExporter(private val context: Context) {
     fun export(
         sources: List<Source>,
         segments: List<Segment>,
-        music: MusicTrack?,
+        music: List<MusicTrack>,
         options: ExportOptions,
         onDone: (String) -> Unit,
         onError: (String) -> Unit
@@ -88,31 +88,35 @@ class TimelineExporter(private val context: Context) {
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
 
-        // ---- Music sequence: silence until the music offset, then the trimmed music ----
-        if (music != null) {
-            val musicLen = min(music.lengthMs, totalMs - music.offsetMs)
-            if (musicLen > 0L) {
-                val musicItems = mutableListOf<EditedMediaItem>()
-                if (music.offsetMs > 0L) {
-                    val silent = writeSilentWav(tempDir, music.offsetMs)
-                    musicItems.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silent))).build())
-                }
-                val clipped = MediaItem.Builder()
-                    .setUri(music.uri)
-                    .setClippingConfiguration(
-                        MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(music.inMs)
-                            .setEndPositionMs(music.inMs + musicLen)
-                            .build()
-                    )
-                    .build()
-                musicItems.add(
-                    EditedMediaItem.Builder(clipped)
-                        .setEffects(Effects(listOf(VolumeAudioProcessor(music.volume)), emptyList()))
+        // ---- Audio sequence: clips in timeline order, with silence in the gaps ----
+        val audioItems = mutableListOf<EditedMediaItem>()
+        var cursor = 0L
+        for (c in music.sortedBy { it.offsetMs }) {
+            val len = min(c.lengthMs, totalMs - c.offsetMs)
+            if (len <= 0L) continue
+            if (c.offsetMs < cursor) continue // overlapping clip: the earlier one is kept
+            if (c.offsetMs > cursor) {
+                val silent = writeSilentWav(tempDir, c.offsetMs - cursor)
+                audioItems.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silent))).build())
+            }
+            val clipped = MediaItem.Builder()
+                .setUri(c.uri)
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(c.inMs)
+                        .setEndPositionMs(c.inMs + len)
                         .build()
                 )
-                sequences.add(EditedMediaItemSequence.Builder(musicItems).build())
-            }
+                .build()
+            audioItems.add(
+                EditedMediaItem.Builder(clipped)
+                    .setEffects(Effects(listOf(VolumeAudioProcessor(c.volume)), emptyList()))
+                    .build()
+            )
+            cursor = c.offsetMs + len
+        }
+        if (audioItems.isNotEmpty()) {
+            sequences.add(EditedMediaItemSequence.Builder(audioItems).build())
         }
 
         val composition = Composition.Builder(sequences).build()
@@ -125,7 +129,7 @@ class TimelineExporter(private val context: Context) {
                         try {
                             val location = saveToMovies(tempFile)
                             tempFile.delete()
-                            silenceFile?.delete()
+                            deleteSilence()
                             mainHandler.post { onDone(location) }
                         } catch (e: Exception) {
                             mainHandler.post { onError("Rendered, but saving failed: ${e.message}") }
@@ -140,7 +144,7 @@ class TimelineExporter(private val context: Context) {
                 ) {
                     transformer = null
                     tempFile.delete()
-                    silenceFile?.delete()
+                    deleteSilence()
                     onError(exportException.message ?: "Export failed")
                 }
             })
@@ -238,10 +242,15 @@ class TimelineExporter(private val context: Context) {
         buf.putShort(16)
         buf.put("data".toByteArray())
         buf.putInt(dataSize)
-        val file = File(dir, "silence_${System.currentTimeMillis()}.wav")
+        val file = File(dir, "silence_${System.nanoTime()}.wav")
         file.writeBytes(buf.array())
-        silenceFile = file
+        silenceFiles.add(file)
         return file
+    }
+
+    private fun deleteSilence() {
+        silenceFiles.forEach { it.delete() }
+        silenceFiles.clear()
     }
 
     /** Copies the rendered file into Movies/ZEVN and returns where it is. */
@@ -276,5 +285,6 @@ class TimelineExporter(private val context: Context) {
     fun cancel() {
         transformer?.cancel()
         transformer = null
+        deleteSilence()
     }
 }
