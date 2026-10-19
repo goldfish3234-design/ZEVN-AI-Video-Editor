@@ -36,11 +36,29 @@ object ProjectStore {
 
     private fun pointerFile(context: Context) = File(context.filesDir, "current_project.txt")
 
+    /** Moves the project saved by the older single-project version into the new folder layout. */
+    private fun migrateLegacy(context: Context) {
+        val legacy = File(context.filesDir, "project.json")
+        if (!legacy.exists()) return
+        try {
+            val id = UUID.randomUUID().toString()
+            val dest = File(projectDir(context, id), "project.json")
+            legacy.copyTo(dest)
+            legacy.delete()
+        } catch (e: Exception) {
+            // keep the legacy file if the move fails
+        }
+    }
+
     /** The id of the project being edited. Creates one if none exists yet. */
     private fun ensureCurrent(context: Context): String {
         currentId?.let { return it }
         val saved = pointerFile(context).takeIf { it.exists() }?.readText()?.trim()
-        val id = if (!saved.isNullOrEmpty() && File(rootDir(context), saved).exists()) saved else UUID.randomUUID().toString()
+        val id = if (!saved.isNullOrEmpty() && File(rootDir(context), saved).exists()) {
+            saved
+        } else {
+            UUID.randomUUID().toString()
+        }
         setCurrent(context, id)
         return id
     }
@@ -68,6 +86,7 @@ object ProjectStore {
 
     /** Loads the current project (used when the editor opens and the timeline is empty). */
     fun loadCurrent(context: Context): ProjectState? {
+        migrateLegacy(context)
         val id = ensureCurrent(context)
         val state = read(context, id)
         if (state != null) currentName = state.name
@@ -84,7 +103,7 @@ object ProjectStore {
         return Uri.fromFile(dest)
     }
 
-    /** Folder for files created by the app for the current project (e.g. extracted audio). */
+    /** Folder for files the app creates for the current project (e.g. extracted audio). */
     fun currentMediaDir(context: Context): File = projectDir(context, ensureCurrent(context))
 
     fun save(context: Context, state: ProjectState) {
@@ -131,6 +150,7 @@ object ProjectStore {
 
     /** All saved projects, newest first. */
     fun list(context: Context): List<ProjectSummary> {
+        migrateLegacy(context)
         val out = mutableListOf<ProjectSummary>()
         for (dir in rootDir(context).listFiles().orEmpty()) {
             val f = File(dir, "project.json")
