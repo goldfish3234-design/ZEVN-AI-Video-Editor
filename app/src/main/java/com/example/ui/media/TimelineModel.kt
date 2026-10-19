@@ -5,11 +5,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** A video file the user imported (a private copy in app storage). */
+/** A video file the user imported (a private copy in the project folder). */
 data class Source(val uri: Uri, val durationMs: Long)
 
-/** One piece of a source video, in source time (ms). [source] is the index into the sources list. */
-data class Segment(val source: Int, val startMs: Long, val endMs: Long) {
+/** One piece of a source video, in source time (ms). [source] indexes the sources list. [volume] is the clip's own sound level. */
+data class Segment(val source: Int, val startMs: Long, val endMs: Long, val volume: Float = 1f) {
     val durationMs: Long get() = endMs - startMs
 }
 
@@ -17,7 +17,7 @@ data class Segment(val source: Int, val startMs: Long, val endMs: Long) {
 data class SeekRequest(val ms: Long, val id: Long)
 
 /**
- * Background music.
+ * Background music / extracted audio.
  * [offsetMs] is where it starts on the timeline. [inMs]..[outMs] is the part of the audio file that is used.
  */
 data class MusicTrack(
@@ -35,9 +35,7 @@ data class MusicTrack(
 enum class ActiveTrack { VIDEO, MUSIC }
 
 /**
- * Timeline state.
- * The video timeline is a list of segments (from one or more imported videos) played one after another.
- * Times in the public API are timeline time (ms) unless stated otherwise.
+ * Timeline state. Times in the public API are timeline time (ms) unless stated otherwise.
  */
 object TimelineModel {
     private const val MIN_SEGMENT_MS = 300L
@@ -92,7 +90,7 @@ object TimelineModel {
         commit(_segments.value + Segment(index, 0L, durationMs))
     }
 
-    /** Replaces the whole project (used when loading a saved project). */
+    /** Replaces the whole timeline (used when opening a project). */
     fun restore(sources: List<Source>, segments: List<Segment>, music: MusicTrack?) {
         _sources.value = sources
         _segments.value = segments
@@ -105,6 +103,15 @@ object TimelineModel {
         _playheadMs.value = 0L
         _isPlaying.value = false
         updateFlags()
+    }
+
+    /** Sets the sound level of one clip. Not added to undo history (slider changes are continuous). */
+    fun setSegmentVolume(index: Int, volume: Float) {
+        val list = _segments.value
+        if (index !in list.indices) return
+        val out = ArrayList<Segment>(list)
+        out[index] = list[index].copy(volume = volume.coerceIn(0f, 1f))
+        _segments.value = out
     }
 
     fun setMusic(uri: Uri, durationMs: Long) {
@@ -250,8 +257,8 @@ object TimelineModel {
                 s.durationMs - rel >= MIN_SEGMENT_MS
             if (canSplit) {
                 val cut = s.startMs + rel
-                out.add(Segment(s.source, s.startMs, cut))
-                out.add(Segment(s.source, cut, s.endMs))
+                out.add(s.copy(endMs = cut))
+                out.add(s.copy(startMs = cut))
             } else {
                 out.add(s)
             }
@@ -324,7 +331,7 @@ object TimelineModel {
         val rel = _playheadMs.value - start
         if (rel <= 0L || s.durationMs - rel < MIN_SEGMENT_MS) return
         val out = ArrayList<Segment>(list)
-        out[i] = Segment(s.source, s.startMs + rel, s.endMs)
+        out[i] = s.copy(startMs = s.startMs + rel)
         commit(out)
     }
 
@@ -336,7 +343,7 @@ object TimelineModel {
         val rel = _playheadMs.value - start
         if (rel < MIN_SEGMENT_MS || rel >= s.durationMs) return
         val out = ArrayList<Segment>(list)
-        out[i] = Segment(s.source, s.startMs, s.startMs + rel)
+        out[i] = s.copy(endMs = s.startMs + rel)
         commit(out)
     }
 }
