@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,9 +31,11 @@ import com.example.R
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
 import com.example.ui.media.MediaProbe
+import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
 import com.example.ui.viewmodel.VideoEditorViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,9 +59,24 @@ fun EditorScreen(
 
     val currentProj = project ?: return
 
-    // Stop playback when leaving the editor
+    val exporter = remember { TimelineExporter(context) }
+    var exporting by remember { mutableStateOf(false) }
+    var exportProgress by remember { mutableIntStateOf(0) }
+
+    // Stop playback when leaving the editor; cancel export if leaving
     DisposableEffect(Unit) {
-        onDispose { TimelineModel.setPlaying(false) }
+        onDispose {
+            TimelineModel.setPlaying(false)
+            exporter.cancel()
+        }
+    }
+
+    // Poll export progress while exporting
+    LaunchedEffect(exporting) {
+        while (exporting) {
+            exportProgress = exporter.progress()
+            delay(250L)
+        }
     }
 
     // Multiple video import (Android Photo Picker)
@@ -91,6 +109,26 @@ fun EditorScreen(
     }
     val launchMusicPicker: () -> Unit = {
         musicPicker.launch(arrayOf("audio/*"))
+    }
+
+    val startExport: () -> Unit = {
+        if (segments.isNotEmpty() && !exporting) {
+            exporting = true
+            exportProgress = 0
+            exporter.export(
+                sources = sources,
+                segments = segments,
+                music = music,
+                onDone = { file ->
+                    exporting = false
+                    Toast.makeText(context, "Saved: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                },
+                onError = { message ->
+                    exporting = false
+                    Toast.makeText(context, "Export failed: $message", Toast.LENGTH_LONG).show()
+                }
+            )
+        }
     }
 
     val total = segments.sumOf { it.durationMs }
@@ -133,7 +171,8 @@ fun EditorScreen(
                     Icon(Icons.Default.VideoLibrary, contentDescription = "Import Video", tint = Color.White)
                 }
                 Button(
-                    onClick = onOpenExport,
+                    onClick = startExport,
+                    enabled = hasVideo && !exporting,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4834)),
                     shape = RoundedCornerShape(16.dp),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
@@ -326,6 +365,37 @@ fun EditorScreen(
                 }
             }
         }
+    }
+
+    // --- EXPORT PROGRESS DIALOG ---
+    if (exporting) {
+        AlertDialog(
+            onDismissRequest = { },
+            containerColor = Color(0xFF161622),
+            title = { Text("Exporting video", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Rendering clips and music...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { exportProgress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFFF5238)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("$exportProgress%", fontSize = 12.sp, color = Color.White)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    exporter.cancel()
+                    exporting = false
+                    Toast.makeText(context, "Export cancelled", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Cancel", color = Color(0xFFFF5238))
+                }
+            }
+        )
     }
 }
 
