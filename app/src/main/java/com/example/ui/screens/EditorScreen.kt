@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
@@ -43,7 +44,9 @@ import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.data.model.AspectRatioType
 import com.example.service.AudioRecorderManager
+import com.example.ui.components.VideoPreview
 import com.example.ui.components.WaveformVisualizer
+import com.example.ui.media.ImportedMedia
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.EditorTab
 import com.example.ui.viewmodel.VideoEditorViewModel
@@ -64,6 +67,7 @@ fun EditorScreen(
     val isTranscribing by viewModel.isTranscribing.collectAsState()
     val isGeneratingVeo by viewModel.isGeneratingVeo.collectAsState()
     val transcribedText by viewModel.transcribedText.collectAsState()
+    val importedVideoUri by ImportedMedia.videoUri.collectAsState()
 
     val currentProj = project ?: return
 
@@ -71,6 +75,16 @@ fun EditorScreen(
     var showVeoModal by remember { mutableStateOf(false) }
     var showTranscribeModal by remember { mutableStateOf(false) }
     var showOpacitySlider by remember { mutableStateOf(false) }
+
+    // Gallery video picker (Android Photo Picker, no storage permission needed)
+    val videoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            ImportedMedia.setVideo(uri)
+            viewModel.pause()
+        }
+    }
 
     // Audio recording manager
     val audioRecorder = remember { AudioRecorderManager(context) }
@@ -115,6 +129,25 @@ fun EditorScreen(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Import video from gallery
+                IconButton(
+                    onClick = {
+                        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                    },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("editor_import_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VideoLibrary,
+                        contentDescription = "Import Video",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
                 // Resolution Selector "1080p ▾"
                 Box(
                     modifier = Modifier
@@ -179,20 +212,32 @@ fun EditorScreen(
                     .background(Color.Black)
                     .clickable { viewModel.togglePlayPause() }
             ) {
-                // Video Frame Image with Opacity & Rotation
-                Image(
-                    painter = painterResource(id = currentProj.thumbnailRes),
-                    contentDescription = "Video Preview",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .alpha(currentOpacity)
-                        .rotate(currentProj.rotationAngle.toFloat())
-                        .scale(
-                            scaleX = if (currentProj.isFlippedH) -1f else 1f,
-                            scaleY = if (currentProj.isFlippedV) -1f else 1f
-                        ),
-                    contentScale = ContentScale.Crop
-                )
+                val mediaModifier = Modifier
+                    .fillMaxSize()
+                    .alpha(currentOpacity)
+                    .rotate(currentProj.rotationAngle.toFloat())
+                    .scale(
+                        scaleX = if (currentProj.isFlippedH) -1f else 1f,
+                        scaleY = if (currentProj.isFlippedV) -1f else 1f
+                    )
+
+                val videoUri = importedVideoUri
+                if (videoUri != null) {
+                    // Real imported video from the gallery
+                    VideoPreview(
+                        uri = videoUri,
+                        isPlaying = isPlaying,
+                        modifier = mediaModifier
+                    )
+                } else {
+                    // Sample frame when no video is imported yet
+                    Image(
+                        painter = painterResource(id = currentProj.thumbnailRes),
+                        contentDescription = "Video Preview",
+                        modifier = mediaModifier,
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
                 // Dark Bottom Gradient Overlay for Typography
                 Box(
@@ -209,40 +254,60 @@ fun EditorScreen(
                         )
                 )
 
-                // High Fashion Overlaid Typography: "NEW IN FASHION / Step Into What's New"
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "NEW IN",
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Serif,
-                        color = Color.White,
-                        letterSpacing = 2.sp,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = "FASHION",
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Serif,
-                        color = Color.White,
-                        letterSpacing = 2.sp,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Step Into What's New",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFFFF5238),
-                        letterSpacing = 1.sp,
-                        textAlign = TextAlign.Center
-                    )
+                // Sample typography only shows when no real video is imported
+                if (videoUri == null) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "NEW IN",
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Serif,
+                            color = Color.White,
+                            letterSpacing = 2.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "FASHION",
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Serif,
+                            color = Color.White,
+                            letterSpacing = 2.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Step Into What's New",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFFF5238),
+                            letterSpacing = 1.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Import hint when nothing is picked yet
+                if (videoUri == null) {
+                    Button(
+                        onClick = {
+                            videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 16.dp)
+                    ) {
+                        Icon(Icons.Default.VideoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Import Video", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
                 }
 
                 // AI Transcribing status indicator
