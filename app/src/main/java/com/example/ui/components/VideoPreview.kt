@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import android.net.Uri
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -16,10 +15,11 @@ import com.example.ui.media.TimelineModel
 import com.example.ui.media.VideoAudio
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlin.math.abs
 
 /**
- * Plays the timeline: video segments (from one or more sources) one after another,
- * with the background music (if any) playing alongside.
+ * Plays the timeline: video segments one after another, with the trimmed music
+ * starting at its offset on the timeline.
  * Play state, playhead and seeks all go through [TimelineModel].
  */
 @Composable
@@ -47,7 +47,7 @@ fun VideoPreview(
 
     val musicPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
+            repeatMode = Player.REPEAT_MODE_OFF
         }
     }
 
@@ -58,7 +58,23 @@ fun VideoPreview(
         }
     }
 
-    // Video's own sound level (mute / slider)
+    // Keeps the music player in step with the playhead.
+    // Music plays only while the playhead is inside the music bar.
+    fun syncMusic(playheadMs: Long, playing: Boolean) {
+        val m = TimelineModel.music.value ?: return
+        val rel = playheadMs - m.offsetMs
+        val inside = rel >= 0L && rel < m.lengthMs
+        if (!playing || !inside) {
+            musicPlayer.playWhenReady = false
+            return
+        }
+        if (!musicPlayer.isPlaying || abs(musicPlayer.currentPosition - rel) > 300L) {
+            musicPlayer.seekTo(rel)
+        }
+        musicPlayer.playWhenReady = true
+    }
+
+    // Video's own sound level
     LaunchedEffect(videoVolume) {
         player.volume = videoVolume
     }
@@ -83,19 +99,31 @@ fun VideoPreview(
         }
     }
 
-    // Music: load when the track changes
-    LaunchedEffect(music?.uri) {
+    // Music file: load the trimmed part when the file or its trim changes
+    LaunchedEffect(music?.uri, music?.inMs, music?.outMs) {
         val m = music
         if (m == null) {
             musicPlayer.clearMediaItems()
         } else {
-            musicPlayer.setMediaItem(MediaItem.fromUri(m.uri))
+            musicPlayer.setMediaItem(
+                MediaItem.Builder()
+                    .setUri(m.uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(m.inMs)
+                            .setEndPositionMs(m.outMs)
+                            .build()
+                    )
+                    .build()
+            )
             musicPlayer.prepare()
-            if (m.durationMs > 0L) {
-                musicPlayer.seekTo(TimelineModel.playheadMs.value % m.durationMs)
-            }
-            musicPlayer.playWhenReady = TimelineModel.isPlaying.value
+            syncMusic(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
         }
+    }
+
+    // Music moved on the timeline
+    LaunchedEffect(music?.offsetMs) {
+        syncMusic(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
     }
 
     LaunchedEffect(music?.volume) {
@@ -108,14 +136,7 @@ fun VideoPreview(
             player.seekTo(0, 0L)
         }
         player.playWhenReady = isPlaying
-
-        val m = TimelineModel.music.value
-        if (m != null && m.durationMs > 0L) {
-            if (isPlaying) {
-                musicPlayer.seekTo(TimelineModel.playheadMs.value % m.durationMs)
-            }
-            musicPlayer.playWhenReady = isPlaying
-        }
+        syncMusic(TimelineModel.playheadMs.value, isPlaying)
     }
 
     // Jump requested from the timeline (tap or drag)
@@ -123,10 +144,7 @@ fun VideoPreview(
         val req = seekRequest ?: return@LaunchedEffect
         val (index, offset) = TimelineModel.locate(req.ms)
         player.seekTo(index, offset)
-        val m = TimelineModel.music.value
-        if (m != null && m.durationMs > 0L) {
-            musicPlayer.seekTo(req.ms % m.durationMs)
-        }
+        syncMusic(req.ms, TimelineModel.isPlaying.value)
     }
 
     // Keep the timeline playhead in sync while the video plays
@@ -137,7 +155,9 @@ fun VideoPreview(
                 val idx = player.currentMediaItemIndex
                 var before = 0L
                 for (k in 0 until minOf(idx, segs.size)) before += segs[k].durationMs
-                TimelineModel.setPlayhead(before + player.currentPosition)
+                val ph = before + player.currentPosition
+                TimelineModel.setPlayhead(ph)
+                syncMusic(ph, true)
             }
             delay(100L)
         }
