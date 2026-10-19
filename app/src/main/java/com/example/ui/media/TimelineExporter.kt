@@ -2,31 +2,48 @@ package com.example.ui.media
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
+import androidx.media3.effect.Presentation
+import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.min
 
+/** Project settings that the export must apply to the video. */
+data class ExportOptions(
+    val aspectRatio: Float,
+    val rotationDeg: Float,
+    val flipH: Boolean,
+    val flipV: Boolean,
+    val videoVolume: Float
+)
+
 /**
- * Renders the timeline to an MP4 file, then copies it to the public Movies/ZEVN folder
- * so it shows up in Gallery and Files. Must be started from the main thread.
+ * Renders the timeline to an MP4 file, then copies it to the public Movies/ZEVN folder.
+ * Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
     private var transformer: Transformer? = null
     private val progressHolder = ProgressHolder()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var silenceFile: File? = null
 
     /** Progress 0..100 while exporting. */
     fun progress(): Int {
@@ -40,6 +57,7 @@ class TimelineExporter(private val context: Context) {
         sources: List<Source>,
         segments: List<Segment>,
         music: MusicTrack?,
+        options: ExportOptions,
         onDone: (String) -> Unit,
         onError: (String) -> Unit
     ) {
@@ -48,12 +66,13 @@ class TimelineExporter(private val context: Context) {
             return
         }
 
-        // Render to the app's own folder first (Transformer writes to a file path)
         val tempDir = context.getExternalFilesDir(null) ?: context.filesDir
         tempDir.mkdirs()
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
+        val totalMs = segments.sumOf { it.durationMs }
 
-        // Video: one edited item per segment, in timeline order
+        // ---- Video sequence ----
+        val videoEffects = buildVideoEffects(options)
         val videoItems = segments.map { seg ->
             val clipped = MediaItem.Builder()
                 .setUri(sources[seg.source].uri)
@@ -64,30 +83,37 @@ class TimelineExporter(private val context: Context) {
                         .build()
                 )
                 .build()
-            EditedMediaItem.Builder(clipped).build()
+            EditedMediaItem.Builder(clipped)
+                .setEffects(Effects(listOf(VolumeAudioProcessor(options.videoVolume)), videoEffects))
+                .build()
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
 
-        // Music: repeated clips that cover the whole timeline length
-        if (music != null && music.durationMs > 0L) {
-            val totalMs = segments.sumOf { it.durationMs }
-            val musicItems = mutableListOf<EditedMediaItem>()
-            var remaining = totalMs
-            while (remaining > 0L) {
-                val len = min(music.durationMs, remaining)
+        // ---- Music sequence: silence until the music offset, then the trimmed music ----
+        if (music != null) {
+            val musicLen = min(music.lengthMs, totalMs - music.offsetMs)
+            if (musicLen > 0L) {
+                val musicItems = mutableListOf<EditedMediaItem>()
+                if (music.offsetMs > 0L) {
+                    val silent = writeSilentWav(tempDir, music.offsetMs)
+                    musicItems.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silent))).build())
+                }
                 val clipped = MediaItem.Builder()
                     .setUri(music.uri)
                     .setClippingConfiguration(
                         MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(0L)
-                            .setEndPositionMs(len)
+                            .setStartPositionMs(music.inMs)
+                            .setEndPositionMs(music.inMs + musicLen)
                             .build()
                     )
                     .build()
-                musicItems.add(EditedMediaItem.Builder(clipped).build())
-                remaining -= len
+                musicItems.add(
+                    EditedMediaItem.Builder(clipped)
+                        .setEffects(Effects(listOf(VolumeAudioProcessor(music.volume)), emptyList()))
+                        .build()
+                )
+                sequences.add(EditedMediaItemSequence.Builder(musicItems).build())
             }
-            sequences.add(EditedMediaItemSequence.Builder(musicItems).build())
         }
 
         val composition = Composition.Builder(sequences).build()
@@ -96,11 +122,11 @@ class TimelineExporter(private val context: Context) {
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     transformer = null
-                    // Copy to Movies/ZEVN off the main thread, then report back on the main thread
                     Thread {
                         try {
                             val location = saveToMovies(tempFile)
                             tempFile.delete()
+                            silenceFile?.delete()
                             mainHandler.post { onDone(location) }
                         } catch (e: Exception) {
                             mainHandler.post { onError("Rendered, but saving failed: ${e.message}") }
@@ -115,6 +141,7 @@ class TimelineExporter(private val context: Context) {
                 ) {
                     transformer = null
                     tempFile.delete()
+                    silenceFile?.delete()
                     onError(exportException.message ?: "Export failed")
                 }
             })
@@ -122,6 +149,48 @@ class TimelineExporter(private val context: Context) {
 
         transformer = t
         t.start(composition, tempFile.absolutePath)
+    }
+
+    /** Rotation, flip and aspect ratio applied to every video frame. */
+    private fun buildVideoEffects(options: ExportOptions): List<Effect> {
+        val list = mutableListOf<Effect>()
+        if (options.rotationDeg != 0f || options.flipH || options.flipV) {
+            list.add(
+                ScaleAndRotateTransformation.Builder()
+                    .setRotationDegrees(options.rotationDeg)
+                    .setScale(if (options.flipH) -1f else 1f, if (options.flipV) -1f else 1f)
+                    .build()
+            )
+        }
+        list.add(Presentation.createForAspectRatio(options.aspectRatio, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+        return list
+    }
+
+    /** Writes a silent stereo 16-bit 44.1 kHz WAV file of the given length. */
+    private fun writeSilentWav(dir: File, durationMs: Long): File {
+        val sampleRate = 44100
+        val channels = 2
+        val bytesPerFrame = channels * 2
+        val frames = (durationMs * sampleRate / 1000L).toInt()
+        val dataSize = frames * bytesPerFrame
+        val buf = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put("RIFF".toByteArray())
+        buf.putInt(36 + dataSize)
+        buf.put("WAVE".toByteArray())
+        buf.put("fmt ".toByteArray())
+        buf.putInt(16)
+        buf.putShort(1)
+        buf.putShort(channels.toShort())
+        buf.putInt(sampleRate)
+        buf.putInt(sampleRate * bytesPerFrame)
+        buf.putShort(bytesPerFrame.toShort())
+        buf.putShort(16)
+        buf.put("data".toByteArray())
+        buf.putInt(dataSize)
+        val file = File(dir, "silence_${System.currentTimeMillis()}.wav")
+        file.writeBytes(buf.array())
+        silenceFile = file
+        return file
     }
 
     /** Copies the rendered file into Movies/ZEVN and returns where it is. */
@@ -145,7 +214,6 @@ class TimelineExporter(private val context: Context) {
             resolver.update(uri, values, null, null)
             "Movies/ZEVN/$name"
         } else {
-            // Android 9 and older: public Movies folder (needs storage permission on these versions)
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "ZEVN")
             dir.mkdirs()
             val dest = File(dir, name)
