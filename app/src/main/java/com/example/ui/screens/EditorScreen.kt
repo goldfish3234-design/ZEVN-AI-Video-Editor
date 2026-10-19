@@ -121,9 +121,9 @@ fun EditorScreen(
                 sources = sources,
                 segments = segments,
                 music = music,
-                onDone = { file ->
+                onDone = { location ->
                     exporting = false
-                    Toast.makeText(context, "Saved: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Saved: $location", Toast.LENGTH_LONG).show()
                 },
                 onError = { message ->
                     exporting = false
