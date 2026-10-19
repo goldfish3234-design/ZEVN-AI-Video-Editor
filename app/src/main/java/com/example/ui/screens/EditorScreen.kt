@@ -7,14 +7,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,8 +34,11 @@ import com.example.R
 import com.example.ui.components.MusicTrackView
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
+import com.example.ui.media.ActiveTrack
 import com.example.ui.media.ExportOptions
 import com.example.ui.media.MediaProbe
+import com.example.ui.media.ProjectState
+import com.example.ui.media.ProjectStore
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
 import com.example.ui.media.VideoAudio
@@ -54,6 +60,7 @@ fun EditorScreen(
     val sources by TimelineModel.sources.collectAsState()
     val segments by TimelineModel.segments.collectAsState()
     val selected by TimelineModel.selected.collectAsState()
+    val activeTrack by TimelineModel.activeTrack.collectAsState()
     val playhead by TimelineModel.playheadMs.collectAsState()
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val canUndo by TimelineModel.canUndo.collectAsState()
@@ -66,12 +73,47 @@ fun EditorScreen(
     val exporter = remember { TimelineExporter(context) }
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableIntStateOf(0) }
+    var loaded by remember { mutableStateOf(false) }
+    var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+    val timelineScroll = rememberScrollState()
 
-    // Stop playback when leaving the editor; cancel export if leaving
+    // Load the saved project once (if the app was restarted)
+    LaunchedEffect(Unit) {
+        if (TimelineModel.sources.value.isEmpty()) {
+            val saved = withContext(Dispatchers.IO) { ProjectStore.load(context) }
+            if (saved != null) {
+                TimelineModel.restore(saved.sources, saved.segments, saved.music)
+                VideoAudio.setVolume(saved.videoVolume)
+            }
+        }
+        loaded = true
+    }
+
+    // Auto-save shortly after every change
+    LaunchedEffect(sources, segments, music, videoVolume, loaded) {
+        if (loaded) {
+            delay(500L)
+            val state = ProjectState(sources, segments, music, videoVolume)
+            withContext(Dispatchers.IO) { ProjectStore.save(context, state) }
+        }
+    }
+
+    // Leaving the editor: stop playback, cancel export, save once more
     DisposableEffect(Unit) {
         onDispose {
             TimelineModel.setPlaying(false)
             exporter.cancel()
+            if (loaded) {
+                ProjectStore.save(
+                    context,
+                    ProjectState(
+                        TimelineModel.sources.value,
+                        TimelineModel.segments.value,
+                        TimelineModel.music.value,
+                        VideoAudio.volume.value
+                    )
+                )
+            }
         }
     }
 
@@ -83,15 +125,18 @@ fun EditorScreen(
         }
     }
 
-    // Multiple video import (Android Photo Picker)
+    // Multiple video import: each file is copied into app storage first
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            scope.launch {
-                for (uri in uris) {
-                    val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
-                    TimelineModel.addSource(uri, duration)
+        scope.launch {
+            for (uri in uris) {
+                try {
+                    val local = withContext(Dispatchers.IO) { ProjectStore.importCopy(context, uri, "video") }
+                    val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, local) }
+                    TimelineModel.addSource(local, duration)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Import failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -100,14 +145,19 @@ fun EditorScreen(
         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
 
-    // Background music (audio file)
+    // Background music (audio file), also copied into app storage
     val musicPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
-                TimelineModel.setMusic(uri, duration)
+                try {
+                    val local = withContext(Dispatchers.IO) { ProjectStore.importCopy(context, uri, "music") }
+                    val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, local) }
+                    TimelineModel.setMusic(local, duration)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Music import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -145,6 +195,13 @@ fun EditorScreen(
     val total = segments.sumOf { it.durationMs }
     val hasSelection = selected >= 0
     val hasVideo = segments.isNotEmpty()
+    val musicTrack = music
+    val musicMode = activeTrack == ActiveTrack.MUSIC && musicTrack != null
+    val scrollFrac = if (timelineScroll.maxValue > 0) {
+        timelineScroll.value.toFloat() / timelineScroll.maxValue.toFloat()
+    } else {
+        0f
+    }
 
     Column(
         modifier = Modifier
@@ -152,7 +209,7 @@ fun EditorScreen(
             .background(Color(0xFF0C0C10))
             .statusBarsPadding()
     ) {
-        // --- HEADER: close, undo, redo, import, export ---
+        // --- HEADER ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -267,34 +324,87 @@ fun EditorScreen(
                 )
             }
             Text(
-                text = if (hasSelection) "Clip ${selected + 1}" else "No clip",
+                text = when {
+                    musicMode -> "Music"
+                    hasSelection -> "Clip ${selected + 1}"
+                    else -> "No clip"
+                },
                 fontSize = 12.sp,
                 color = Color(0xFFA0A0B2)
             )
         }
 
-        // --- VIDEO TRACK ---
-        TimelineView(
-            segments = segments,
-            selectedIndex = selected,
-            playheadMs = playhead,
-            totalMs = total,
-            onTimeChosen = { t ->
-                TimelineModel.requestSeek(t)
-                TimelineModel.selectAtTime(t)
-            },
-            modifier = Modifier.padding(horizontal = 14.dp)
-        )
+        // --- ZOOM CONTROLS ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(1f) }) {
+                Icon(Icons.Default.Remove, contentDescription = "Zoom out", tint = Color.White)
+            }
+            Text(
+                text = "${"%.1f".format(zoom)}x",
+                fontSize = 11.sp,
+                color = Color.White
+            )
+            IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(6f) }) {
+                Icon(Icons.Default.Add, contentDescription = "Zoom in", tint = Color.White)
+            }
+            Slider(
+                value = scrollFrac,
+                onValueChange = { v -> scope.launch { timelineScroll.scrollTo((v * timelineScroll.maxValue).toInt()) } },
+                enabled = zoom > 1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFFF5238),
+                    activeTrackColor = Color(0xFFFF5238)
+                ),
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+            )
+        }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        // --- TIMELINE (video + music), scrolls horizontally when zoomed ---
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+        ) {
+            val contentWidth = maxWidth * zoom
+            Column(modifier = Modifier.horizontalScroll(timelineScroll)) {
+                TimelineView(
+                    segments = segments,
+                    selectedIndex = selected,
+                    playheadMs = playhead,
+                    totalMs = total,
+                    onTimeChosen = { t ->
+                        TimelineModel.requestSeek(t)
+                        TimelineModel.selectAtTime(t)
+                    },
+                    modifier = Modifier.width(contentWidth)
+                )
+                if (musicTrack != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    MusicTrackView(
+                        music = musicTrack,
+                        totalMs = total,
+                        selected = activeTrack == ActiveTrack.MUSIC,
+                        onGrab = { TimelineModel.setActiveTrack(ActiveTrack.MUSIC) },
+                        onMoveBy = { delta -> TimelineModel.moveMusicBy(delta) },
+                        onTrimStartBy = { delta -> TimelineModel.trimMusicStartBy(delta) },
+                        onTrimEndBy = { delta -> TimelineModel.trimMusicEndBy(delta) },
+                        modifier = Modifier.width(contentWidth)
+                    )
+                }
+            }
+        }
 
-        // --- MUSIC TRACK ---
-        val musicTrack = music
+        // --- MUSIC CONTROLS ---
         if (musicTrack == null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
@@ -304,29 +414,6 @@ fun EditorScreen(
                 }
             }
         } else {
-            MusicTrackView(
-                music = musicTrack,
-                totalMs = total,
-                onMoveBy = { delta -> TimelineModel.moveMusicBy(delta) },
-                modifier = Modifier.padding(horizontal = 14.dp)
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                TextButton(onClick = { TimelineModel.trimMusicStartToPlayhead() }) {
-                    Text("Trim music start", fontSize = 11.sp, color = Color(0xFFFF5238))
-                }
-                TextButton(onClick = { TimelineModel.trimMusicEndToPlayhead() }) {
-                    Text("Trim music end", fontSize = 11.sp, color = Color(0xFFFF5238))
-                }
-                IconButton(onClick = { TimelineModel.removeMusic() }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove Music", tint = Color(0xFFA0A0B2))
-                }
-            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -365,11 +452,7 @@ fun EditorScreen(
                     modifier = Modifier.size(20.dp)
                 )
             }
-            Text(
-                text = "Video sound",
-                fontSize = 11.sp,
-                color = Color.White
-            )
+            Text(text = "Video sound", fontSize = 11.sp, color = Color.White)
             Slider(
                 value = videoVolume,
                 onValueChange = { VideoAudio.setVolume(it) },
@@ -380,61 +463,81 @@ fun EditorScreen(
                 ),
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
             )
-            Text(
-                text = "${(videoVolume * 100).toInt()}%",
-                fontSize = 11.sp,
-                color = Color(0xFFA0A0B2)
-            )
+            Text(text = "${(videoVolume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // --- EDIT TOOLS ---
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            item {
-                ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo) {
-                    TimelineModel.splitAtPlayhead()
+        // --- TOOLS (depend on the selected track) ---
+        if (musicMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                    TimelineModel.trimMusicStartToPlayhead()
+                }
+                ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                    TimelineModel.trimMusicEndToPlayhead()
+                }
+                ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                    TimelineModel.removeMusic()
+                }
+                ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
+                    TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
                 }
             }
-            item {
-                ToolButton("Trim start", Icons.Default.FirstPage, enabled = hasSelection) {
-                    TimelineModel.trimStartToPlayhead()
+        } else {
+            val videoTools = activeTrack == ActiveTrack.VIDEO
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo && videoTools) {
+                        TimelineModel.splitAtPlayhead()
+                    }
                 }
-            }
-            item {
-                ToolButton("Trim end", Icons.Default.LastPage, enabled = hasSelection) {
-                    TimelineModel.trimEndToPlayhead()
+                item {
+                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = hasSelection && videoTools) {
+                        TimelineModel.trimStartToPlayhead()
+                    }
                 }
-            }
-            item {
-                ToolButton("Copy", Icons.Default.ContentCopy, enabled = hasSelection) {
-                    TimelineModel.copySelected()
+                item {
+                    ToolButton("Trim end", Icons.Default.LastPage, enabled = hasSelection && videoTools) {
+                        TimelineModel.trimEndToPlayhead()
+                    }
                 }
-            }
-            item {
-                ToolButton("Cut", Icons.Default.ContentCut, enabled = hasSelection) {
-                    TimelineModel.cutSelected()
+                item {
+                    ToolButton("Copy", Icons.Default.ContentCopy, enabled = hasSelection && videoTools) {
+                        TimelineModel.copySelected()
+                    }
                 }
-            }
-            item {
-                ToolButton("Paste", Icons.Default.ContentPaste, enabled = hasVideo) {
-                    TimelineModel.pasteAtPlayhead()
+                item {
+                    ToolButton("Cut", Icons.Default.ContentCut, enabled = hasSelection && videoTools) {
+                        TimelineModel.cutSelected()
+                    }
                 }
-            }
-            item {
-                ToolButton("Delete", Icons.Default.Delete, enabled = hasSelection) {
-                    TimelineModel.deleteSelected()
+                item {
+                    ToolButton("Paste", Icons.Default.ContentPaste, enabled = hasVideo && videoTools) {
+                        TimelineModel.pasteAtPlayhead()
+                    }
                 }
-            }
-            item {
-                ToolButton("Rotate", Icons.Default.RotateRight, enabled = true) {
-                    viewModel.rotate()
+                item {
+                    ToolButton("Delete", Icons.Default.Delete, enabled = hasSelection && videoTools) {
+                        TimelineModel.deleteSelected()
+                    }
+                }
+                item {
+                    ToolButton("Rotate", Icons.Default.RotateRight, enabled = true) {
+                        viewModel.rotate()
+                    }
                 }
             }
         }
