@@ -30,12 +30,11 @@ data class ExportOptions(
     val aspectRatio: Float,
     val rotationDeg: Float,
     val flipH: Boolean,
-    val flipV: Boolean,
-    val videoVolume: Float
+    val flipV: Boolean
 )
 
 /**
- * Renders the timeline to an MP4 file, then copies it to the public Movies/ZEVN folder.
+ * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
  * Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
@@ -71,7 +70,7 @@ class TimelineExporter(private val context: Context) {
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
         val totalMs = segments.sumOf { it.durationMs }
 
-        // ---- Video sequence ----
+        // ---- Video sequence: each clip keeps its own sound level ----
         val videoEffects = buildVideoEffects(options)
         val videoItems = segments.map { seg ->
             val clipped = MediaItem.Builder()
@@ -84,7 +83,7 @@ class TimelineExporter(private val context: Context) {
                 )
                 .build()
             EditedMediaItem.Builder(clipped)
-                .setEffects(Effects(listOf(VolumeAudioProcessor(options.videoVolume)), videoEffects))
+                .setEffects(Effects(listOf(VolumeAudioProcessor(seg.volume)), videoEffects))
                 .build()
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
@@ -149,6 +148,58 @@ class TimelineExporter(private val context: Context) {
 
         transformer = t
         t.start(composition, tempFile.absolutePath)
+    }
+
+    /**
+     * Extracts only the sound of one clip into an audio file in the project folder.
+     * [onDone] receives the audio file's Uri and its length in ms.
+     */
+    fun extractAudio(
+        sources: List<Source>,
+        seg: Segment,
+        onDone: (Uri, Long) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        if (transformer != null) {
+            onError("Another job is running")
+            return
+        }
+        val outFile = File(ProjectStore.currentMediaDir(context), "audio_${System.nanoTime()}.m4a")
+        val clipped = MediaItem.Builder()
+            .setUri(sources[seg.source].uri)
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(seg.startMs)
+                    .setEndPositionMs(seg.endMs)
+                    .build()
+            )
+            .build()
+        val item = EditedMediaItem.Builder(clipped).setRemoveVideo(true).build()
+        val composition = Composition.Builder(
+            listOf(EditedMediaItemSequence.Builder(listOf(item)).build())
+        ).build()
+
+        val t = Transformer.Builder(context)
+            .addListener(object : Transformer.Listener {
+                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    transformer = null
+                    mainHandler.post { onDone(Uri.fromFile(outFile), seg.durationMs) }
+                }
+
+                override fun onError(
+                    composition: Composition,
+                    exportResult: ExportResult,
+                    exportException: ExportException
+                ) {
+                    transformer = null
+                    outFile.delete()
+                    mainHandler.post { onError(exportException.message ?: "Audio extract failed") }
+                }
+            })
+            .build()
+
+        transformer = t
+        t.start(composition, outFile.absolutePath)
     }
 
     /** Rotation, flip and aspect ratio applied to every video frame. */
