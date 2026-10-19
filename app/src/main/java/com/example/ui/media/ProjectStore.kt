@@ -7,12 +7,15 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-/** Everything needed to rebuild one project in the editor. */
+/**
+ * Everything needed to rebuild one project in the editor.
+ * [music] is the list of audio clips (the audio track).
+ */
 data class ProjectState(
     val name: String,
     val sources: List<Source>,
     val segments: List<Segment>,
-    val music: MusicTrack?
+    val music: List<MusicTrack>
 )
 
 /** One row in the Drafts list. */
@@ -131,10 +134,9 @@ object ProjectStore {
         }
         root.put("segments", segments)
 
-        val m = state.music
-        if (m != null) {
-            root.put(
-                "music",
+        val audio = JSONArray()
+        for (m in state.music) {
+            audio.put(
                 JSONObject()
                     .put("uri", m.uri.toString())
                     .put("fileDurationMs", m.fileDurationMs)
@@ -144,6 +146,7 @@ object ProjectStore {
                     .put("outMs", m.outMs)
             )
         }
+        root.put("audio", audio)
 
         File(projectDir(context, id), "project.json").writeText(root.toString())
     }
@@ -174,6 +177,15 @@ object ProjectStore {
         }
     }
 
+    private fun parseAudio(o: JSONObject): MusicTrack = MusicTrack(
+        uri = Uri.parse(o.getString("uri")),
+        fileDurationMs = o.getLong("fileDurationMs"),
+        volume = o.optDouble("volume", 1.0).toFloat(),
+        offsetMs = o.getLong("offsetMs"),
+        inMs = o.getLong("inMs"),
+        outMs = o.getLong("outMs")
+    )
+
     private fun read(context: Context, id: String): ProjectState? {
         val file = File(projectDir(context, id), "project.json")
         if (!file.exists()) return null
@@ -201,25 +213,20 @@ object ProjectStore {
                 )
             }
 
-            val music = if (root.has("music")) {
-                val o = root.getJSONObject("music")
-                MusicTrack(
-                    uri = Uri.parse(o.getString("uri")),
-                    fileDurationMs = o.getLong("fileDurationMs"),
-                    volume = o.getDouble("volume").toFloat(),
-                    offsetMs = o.getLong("offsetMs"),
-                    inMs = o.getLong("inMs"),
-                    outMs = o.getLong("outMs")
-                )
-            } else {
-                null
+            val audio = mutableListOf<MusicTrack>()
+            val audioArr = root.optJSONArray("audio")
+            if (audioArr != null) {
+                for (i in 0 until audioArr.length()) audio.add(parseAudio(audioArr.getJSONObject(i)))
+            } else if (root.has("music")) {
+                // older projects kept a single music clip
+                audio.add(parseAudio(root.getJSONObject("music")))
             }
 
             ProjectState(
                 name = root.optString("name", "Untitled"),
                 sources = sources,
                 segments = segments,
-                music = music
+                music = audio
             )
         } catch (e: Exception) {
             null
