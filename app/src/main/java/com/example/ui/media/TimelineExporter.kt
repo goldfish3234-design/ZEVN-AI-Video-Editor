@@ -35,6 +35,7 @@ data class ExportOptions(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
+ * Overlapping audio clips are placed in separate sequences, so Media3 mixes them together.
  * Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
@@ -49,6 +50,31 @@ class TimelineExporter(private val context: Context) {
         val t = transformer ?: return 0
         t.getProgress(progressHolder)
         return progressHolder.progress.coerceIn(0, 100)
+    }
+
+    /** Splits audio clips into lanes so that clips in one lane never overlap. */
+    private fun audioLanesOf(clips: List<MusicTrack>): List<List<MusicTrack>> {
+        val order = clips.sortedBy { it.offsetMs }
+        val laneEnds = ArrayList<Long>()
+        val lanes = ArrayList<MutableList<MusicTrack>>()
+        for (c in order) {
+            val start = c.offsetMs
+            val end = start + c.lengthMs
+            var placed = false
+            for (l in laneEnds.indices) {
+                if (laneEnds[l] <= start) {
+                    laneEnds[l] = end
+                    lanes[l].add(c)
+                    placed = true
+                    break
+                }
+            }
+            if (!placed) {
+                laneEnds.add(end)
+                lanes.add(mutableListOf(c))
+            }
+        }
+        return lanes
     }
 
     /** [onDone] gets a human-readable location of the saved file. */
@@ -88,35 +114,36 @@ class TimelineExporter(private val context: Context) {
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
 
-        // ---- Audio sequence: clips in timeline order, with silence in the gaps ----
-        val audioItems = mutableListOf<EditedMediaItem>()
-        var cursor = 0L
-        for (c in music.sortedBy { it.offsetMs }) {
-            val len = min(c.lengthMs, totalMs - c.offsetMs)
-            if (len <= 0L) continue
-            if (c.offsetMs < cursor) continue // overlapping clip: the earlier one is kept
-            if (c.offsetMs > cursor) {
-                val silent = writeSilentWav(tempDir, c.offsetMs - cursor)
-                audioItems.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silent))).build())
-            }
-            val clipped = MediaItem.Builder()
-                .setUri(c.uri)
-                .setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(c.inMs)
-                        .setEndPositionMs(c.inMs + len)
+        // ---- Audio sequences: one per lane, clips in order with silence in the gaps ----
+        for (lane in audioLanesOf(music)) {
+            val laneItems = mutableListOf<EditedMediaItem>()
+            var cursor = 0L
+            for (c in lane) {
+                val len = min(c.lengthMs, totalMs - c.offsetMs)
+                if (len <= 0L) continue
+                if (c.offsetMs > cursor) {
+                    val silent = writeSilentWav(tempDir, c.offsetMs - cursor)
+                    laneItems.add(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(silent))).build())
+                }
+                val clipped = MediaItem.Builder()
+                    .setUri(c.uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(c.inMs)
+                            .setEndPositionMs(c.inMs + len)
+                            .build()
+                    )
+                    .build()
+                laneItems.add(
+                    EditedMediaItem.Builder(clipped)
+                        .setEffects(Effects(listOf(VolumeAudioProcessor(c.volume)), emptyList()))
                         .build()
                 )
-                .build()
-            audioItems.add(
-                EditedMediaItem.Builder(clipped)
-                    .setEffects(Effects(listOf(VolumeAudioProcessor(c.volume)), emptyList()))
-                    .build()
-            )
-            cursor = c.offsetMs + len
-        }
-        if (audioItems.isNotEmpty()) {
-            sequences.add(EditedMediaItemSequence.Builder(audioItems).build())
+                cursor = c.offsetMs + len
+            }
+            if (laneItems.isNotEmpty()) {
+                sequences.add(EditedMediaItemSequence.Builder(laneItems).build())
+            }
         }
 
         val composition = Composition.Builder(sequences).build()
