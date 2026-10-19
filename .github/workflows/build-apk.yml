@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -46,8 +49,19 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Upload APK
+      - name: Prepare APK with a fixed file name
+        run: cp app/build/outputs/apk/debug/app-debug.apk ZEVN-debug.apk
+
+      - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZEVN-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ZEVN-debug.apk
+
+      - name: Publish APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: ZEVN build ${{ github.run_number }}
+          make_latest: true
+          files: ZEVN-debug.apk
