@@ -71,7 +71,8 @@ fun EditorScreen(
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val canUndo by TimelineModel.canUndo.collectAsState()
     val canRedo by TimelineModel.canRedo.collectAsState()
-    val music by TimelineModel.music.collectAsState()
+    val audioClips by TimelineModel.audio.collectAsState()
+    val selectedAudio by TimelineModel.selectedAudio.collectAsState()
 
     val currentProj = project ?: return
 
@@ -95,10 +96,10 @@ fun EditorScreen(
     }
 
     // Auto-save shortly after every change
-    LaunchedEffect(sources, segments, music, loaded) {
+    LaunchedEffect(sources, segments, audioClips, loaded) {
         if (loaded) {
             delay(500L)
-            val state = ProjectState(ProjectStore.currentName, sources, segments, music)
+            val state = ProjectState(ProjectStore.currentName, sources, segments, audioClips)
             withContext(Dispatchers.IO) { ProjectStore.save(context, state) }
         }
     }
@@ -115,7 +116,7 @@ fun EditorScreen(
                         ProjectStore.currentName,
                         TimelineModel.sources.value,
                         TimelineModel.segments.value,
-                        TimelineModel.music.value
+                        TimelineModel.audio.value
                     )
                 )
             }
@@ -150,7 +151,7 @@ fun EditorScreen(
         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
 
-    // Background music (audio file), also copied into the project folder
+    // Audio file: copied into the project folder, then added to the audio track at the playhead
     val musicPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -159,9 +160,9 @@ fun EditorScreen(
                 try {
                     val local = withContext(Dispatchers.IO) { ProjectStore.importCopy(context, uri, "music") }
                     val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, local) }
-                    TimelineModel.setMusic(local, duration)
+                    TimelineModel.addAudio(local, duration)
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Music import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Audio import failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -177,7 +178,7 @@ fun EditorScreen(
             exporter.export(
                 sources = sources,
                 segments = segments,
-                music = music,
+                music = audioClips,
                 options = ExportOptions(
                     aspectRatio = currentProj.aspectRatio.ratio,
                     rotationDeg = currentProj.rotationAngle.toFloat(),
@@ -199,15 +200,17 @@ fun EditorScreen(
     val extractAudio: () -> Unit = {
         val seg = segments.getOrNull(selected)
         if (seg != null && !extracting) {
+            // the extracted audio starts where the selected clip starts on the timeline
+            var clipStart = 0L
+            for (k in 0 until selected) clipStart += segments[k].durationMs
             extracting = true
             exporter.extractAudio(
                 sources = sources,
                 seg = seg,
                 onDone = { uri, duration ->
                     extracting = false
-                    TimelineModel.setMusic(uri, duration)
-                    TimelineModel.setActiveTrack(ActiveTrack.MUSIC)
-                    Toast.makeText(context, "Audio extracted to the music track", Toast.LENGTH_SHORT).show()
+                    TimelineModel.addAudio(uri, duration, clipStart)
+                    Toast.makeText(context, "Audio extracted to the audio track", Toast.LENGTH_SHORT).show()
                 },
                 onError = { message ->
                     extracting = false
@@ -220,8 +223,8 @@ fun EditorScreen(
     val total = segments.sumOf { it.durationMs }
     val hasSelection = selected >= 0
     val hasVideo = segments.isNotEmpty()
-    val musicTrack = music
-    val musicMode = activeTrack == ActiveTrack.MUSIC && musicTrack != null
+    val audioSel = audioClips.getOrNull(selectedAudio)
+    val audioMode = activeTrack == ActiveTrack.MUSIC && audioSel != null
     val videoTools = activeTrack == ActiveTrack.VIDEO
     val selectedClip = segments.getOrNull(selected)
     val scrollFrac = if (timelineScroll.maxValue > 0) {
@@ -352,7 +355,7 @@ fun EditorScreen(
             }
             Text(
                 text = when {
-                    musicMode -> "Music"
+                    audioMode -> "Audio ${selectedAudio + 1}"
                     hasSelection -> "Clip ${selected + 1}"
                     else -> "No clip"
                 },
@@ -387,7 +390,7 @@ fun EditorScreen(
             )
         }
 
-        // --- TIMELINE (video + music), pinch to zoom, scrolls when zoomed ---
+        // --- TIMELINE (video + audio), pinch to zoom, scrolls when zoomed ---
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
@@ -428,16 +431,16 @@ fun EditorScreen(
                     },
                     modifier = Modifier.width(contentWidth)
                 )
-                if (musicTrack != null) {
+                if (audioClips.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(6.dp))
                     MusicTrackView(
-                        music = musicTrack,
+                        clips = audioClips,
                         totalMs = total,
-                        selected = activeTrack == ActiveTrack.MUSIC,
-                        onGrab = { TimelineModel.setActiveTrack(ActiveTrack.MUSIC) },
-                        onMoveBy = { delta -> TimelineModel.moveMusicBy(delta) },
-                        onTrimStartBy = { delta -> TimelineModel.trimMusicStartBy(delta) },
-                        onTrimEndBy = { delta -> TimelineModel.trimMusicEndBy(delta) },
+                        selectedIndex = selectedAudio,
+                        onSelect = { i -> TimelineModel.selectAudio(i) },
+                        onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
+                        onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
+                        onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
                         modifier = Modifier.width(contentWidth)
                     )
                 }
@@ -446,26 +449,26 @@ fun EditorScreen(
 
         // --- VOLUME BAR (only after the Volume button is pressed) ---
         if (showVolumeBar) {
-            if (musicMode && musicTrack != null) {
+            if (audioMode && audioSel != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Music", fontSize = 11.sp, color = Color.White)
+                    Text("Audio", fontSize = 11.sp, color = Color.White)
                     Slider(
-                        value = musicTrack.volume,
-                        onValueChange = { TimelineModel.setMusicVolume(it) },
+                        value = audioSel.volume,
+                        onValueChange = { TimelineModel.setAudioVolume(selectedAudio, it) },
                         colors = SliderDefaults.colors(
                             thumbColor = Color(0xFFFF5238),
                             activeTrackColor = Color(0xFFFF5238)
                         ),
                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                     )
-                    Text("${(musicTrack.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                    Text("${(audioSel.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
                 }
-            } else if (selectedClip != null) {
+            } else if (selectedClip != null && videoTools) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -497,47 +500,75 @@ fun EditorScreen(
             }
         }
 
-        // Add music when there is none
-        if (musicTrack == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
-                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Music", fontSize = 12.sp)
-                }
+        // Add audio at the playhead
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
+                Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Add Audio", fontSize = 12.sp)
             }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
         // --- TOOLS (depend on the selected track) ---
-        if (musicMode) {
-            Row(
+        if (audioMode) {
+            LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ToolButton("Volume", Icons.Default.VolumeUp, enabled = true) {
-                    showVolumeBar = !showVolumeBar
+                item {
+                    ToolButton("Volume", Icons.Default.VolumeUp, enabled = true) {
+                        showVolumeBar = !showVolumeBar
+                    }
                 }
-                ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
-                    TimelineModel.trimMusicStartToPlayhead()
+                item {
+                    ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                        TimelineModel.splitAudioAtPlayhead()
+                    }
                 }
-                ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
-                    TimelineModel.trimMusicEndToPlayhead()
+                item {
+                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                        TimelineModel.trimAudioStartToPlayhead(selectedAudio)
+                    }
                 }
-                ToolButton("Delete", Icons.Default.Delete, enabled = true) {
-                    TimelineModel.removeMusic()
+                item {
+                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                        TimelineModel.trimAudioEndToPlayhead(selectedAudio)
+                    }
                 }
-                ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
-                    TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                item {
+                    ToolButton("Copy", Icons.Default.ContentCopy, enabled = true) {
+                        TimelineModel.copyAudio(selectedAudio)
+                    }
+                }
+                item {
+                    ToolButton("Cut", Icons.Default.ContentCut, enabled = true) {
+                        TimelineModel.cutAudio(selectedAudio)
+                    }
+                }
+                item {
+                    ToolButton("Paste", Icons.Default.ContentPaste, enabled = true) {
+                        TimelineModel.pasteAudioAtPlayhead()
+                    }
+                }
+                item {
+                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                        TimelineModel.deleteAudio(selectedAudio)
+                    }
+                }
+                item {
+                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
+                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                    }
                 }
             }
         } else {
@@ -610,7 +641,7 @@ fun EditorScreen(
             title = { Text("Exporting video", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Rendering video, music and sound...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
+                    Text("Rendering video, audio and sound...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
                         progress = { exportProgress / 100f },
