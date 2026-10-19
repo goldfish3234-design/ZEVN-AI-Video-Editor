@@ -21,6 +21,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,9 +29,12 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
-import com.example.ui.media.ImportedMedia
+import com.example.ui.media.MediaProbe
 import com.example.ui.media.TimelineModel
 import com.example.ui.viewmodel.VideoEditorViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun EditorScreen(
@@ -38,14 +42,17 @@ fun EditorScreen(
     onNavigateBack: () -> Unit,
     onOpenExport: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val project by viewModel.currentProject.collectAsState()
-    val videoUri by ImportedMedia.videoUri.collectAsState()
+    val sources by TimelineModel.sources.collectAsState()
     val segments by TimelineModel.segments.collectAsState()
     val selected by TimelineModel.selected.collectAsState()
     val playhead by TimelineModel.playheadMs.collectAsState()
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val canUndo by TimelineModel.canUndo.collectAsState()
     val canRedo by TimelineModel.canRedo.collectAsState()
+    val music by TimelineModel.music.collectAsState()
 
     val currentProj = project ?: return
 
@@ -54,20 +61,41 @@ fun EditorScreen(
         onDispose { TimelineModel.setPlaying(false) }
     }
 
+    // Multiple video import (Android Photo Picker)
     val videoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            TimelineModel.resetAll()
-            ImportedMedia.setVideo(uri)
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                for (uri in uris) {
+                    val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
+                    TimelineModel.addSource(uri, duration)
+                }
+            }
         }
     }
-    val launchPicker: () -> Unit = {
+    val launchVideoPicker: () -> Unit = {
         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+    }
+
+    // Background music (audio file)
+    val musicPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
+                TimelineModel.setMusic(uri, duration)
+            }
+        }
+    }
+    val launchMusicPicker: () -> Unit = {
+        musicPicker.launch(arrayOf("audio/*"))
     }
 
     val total = segments.sumOf { it.durationMs }
     val hasSelection = selected >= 0
+    val hasVideo = segments.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -101,7 +129,7 @@ fun EditorScreen(
                         tint = if (canRedo) Color.White else Color(0xFF4A4A58)
                     )
                 }
-                IconButton(onClick = launchPicker) {
+                IconButton(onClick = launchVideoPicker) {
                     Icon(Icons.Default.VideoLibrary, contentDescription = "Import Video", tint = Color.White)
                 }
                 Button(
@@ -130,15 +158,14 @@ fun EditorScreen(
                     .aspectRatio(currentProj.aspectRatio.ratio, matchHeightConstraintsFirst = true)
                     .clip(RoundedCornerShape(22.dp))
                     .background(Color.Black)
-                    .clickable(enabled = segments.isNotEmpty()) { TimelineModel.togglePlaying() }
+                    .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() }
             ) {
                 val mediaModifier = Modifier
                     .fillMaxSize()
                     .rotate(currentProj.rotationAngle.toFloat())
 
-                val uri = videoUri
-                if (uri != null) {
-                    VideoPreview(uri = uri, segments = segments, modifier = mediaModifier)
+                if (hasVideo) {
+                    VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
                 } else {
                     Image(
                         painter = painterResource(id = R.drawable.zevn_fashion_hero),
@@ -147,7 +174,7 @@ fun EditorScreen(
                         contentScale = ContentScale.Crop
                     )
                     Button(
-                        onClick = launchPicker,
+                        onClick = launchVideoPicker,
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
@@ -180,7 +207,7 @@ fun EditorScreen(
                     .size(42.dp)
                     .clip(CircleShape)
                     .background(Color.White)
-                    .clickable(enabled = segments.isNotEmpty()) { TimelineModel.togglePlaying() },
+                    .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -196,7 +223,7 @@ fun EditorScreen(
             )
         }
 
-        // --- TIMELINE ---
+        // --- VIDEO TIMELINE ---
         TimelineView(
             segments = segments,
             selectedIndex = selected,
@@ -209,7 +236,46 @@ fun EditorScreen(
             modifier = Modifier.padding(horizontal = 14.dp)
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // --- MUSIC TRACK ---
+        val musicTrack = music
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (musicTrack == null) {
+                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
+                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add Music", fontSize = 12.sp)
+                }
+            } else {
+                Icon(Icons.Default.MusicNote, null, tint = Color(0xFFFF5238), modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Music ${formatMs(musicTrack.durationMs)}",
+                    fontSize = 11.sp,
+                    color = Color.White
+                )
+                Slider(
+                    value = musicTrack.volume,
+                    onValueChange = { TimelineModel.setMusicVolume(it) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFFFF5238),
+                        activeTrackColor = Color(0xFFFF5238)
+                    ),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                IconButton(onClick = { TimelineModel.removeMusic() }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove Music", tint = Color(0xFFA0A0B2))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         // --- EDIT TOOLS ---
         LazyRow(
@@ -220,7 +286,7 @@ fun EditorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             item {
-                ToolButton("Split", Icons.Default.CallSplit, enabled = segments.isNotEmpty()) {
+                ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo) {
                     TimelineModel.splitAtPlayhead()
                 }
             }
@@ -245,7 +311,7 @@ fun EditorScreen(
                 }
             }
             item {
-                ToolButton("Paste", Icons.Default.ContentPaste, enabled = segments.isNotEmpty()) {
+                ToolButton("Paste", Icons.Default.ContentPaste, enabled = hasVideo) {
                     TimelineModel.pasteAtPlayhead()
                 }
             }
