@@ -1,0 +1,6 @@
+{
+  "name": "ZEVN",
+  "description": "AI Video Editor - Create, edit, and enhance videos with AI captions, smart auto-edit, voice tools, avatars, and 4K exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
