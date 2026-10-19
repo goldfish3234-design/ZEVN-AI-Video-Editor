@@ -16,6 +16,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 
+/** How many overlapping audio layers can play together in the preview. */
+private const val MAX_AUDIO_LANES = 4
+
 /** Sets the video player's volume to the sound level of the clip that is playing now. */
 private fun applyClipVolume(player: ExoPlayer) {
     val segs = TimelineModel.segments.value
@@ -24,7 +27,7 @@ private fun applyClipVolume(player: ExoPlayer) {
 
 /**
  * Plays the timeline: video segments one after another (each with its own sound level),
- * and the audio clips at their timeline positions.
+ * and the audio clips at their timeline positions. Overlapping audio clips play together.
  */
 @Composable
 fun VideoPreview(
@@ -52,57 +55,67 @@ fun VideoPreview(
         }
     }
 
-    val audioPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
+    // One audio player per overlapping layer
+    val audioPlayers = remember {
+        List(MAX_AUDIO_LANES) {
+            ExoPlayer.Builder(context).build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+            }
         }
     }
-    // Which audio clip is loaded in the audio player (uri + trim)
-    val loadedAudioKey = remember { mutableStateOf("") }
+    // Which audio clip each layer has loaded (uri + trim)
+    val loadedKeys = remember { List(MAX_AUDIO_LANES) { mutableStateOf("") } }
 
     DisposableEffect(Unit) {
         onDispose {
             player.release()
-            audioPlayer.release()
+            audioPlayers.forEach { it.release() }
         }
     }
 
-    // Puts the audio player at the clip under the playhead (silent when there is none)
+    // Puts each audio layer at the clip under the playhead (silent when there is none)
     fun syncAudio(playheadMs: Long, playing: Boolean) {
-        val idx = TimelineModel.audioIndexAt(playheadMs)
-        if (idx < 0) {
-            audioPlayer.playWhenReady = false
-            return
+        val clips = TimelineModel.audio.value
+        val lanes = TimelineModel.audioLanes()
+        for (lane in 0 until MAX_AUDIO_LANES) {
+            val p = audioPlayers[lane]
+            val idx = lanes.getOrNull(lane)?.firstOrNull { i ->
+                playheadMs >= clips[i].offsetMs && playheadMs < clips[i].offsetMs + clips[i].lengthMs
+            } ?: -1
+            if (idx < 0) {
+                p.playWhenReady = false
+                continue
+            }
+            val c = clips[idx]
+            val key = "${c.uri}|${c.inMs}|${c.outMs}"
+            var reloaded = false
+            if (key != loadedKeys[lane].value) {
+                p.setMediaItem(
+                    MediaItem.Builder()
+                        .setUri(c.uri)
+                        .setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(c.inMs)
+                                .setEndPositionMs(c.outMs)
+                                .build()
+                        )
+                        .build()
+                )
+                p.prepare()
+                loadedKeys[lane].value = key
+                reloaded = true
+            }
+            p.volume = c.volume
+            if (!playing) {
+                p.playWhenReady = false
+                continue
+            }
+            val rel = playheadMs - c.offsetMs
+            if (reloaded || !p.isPlaying || abs(p.currentPosition - rel) > 300L) {
+                p.seekTo(rel)
+            }
+            p.playWhenReady = true
         }
-        val c = TimelineModel.audio.value[idx]
-        val key = "${c.uri}|${c.inMs}|${c.outMs}"
-        var reloaded = false
-        if (key != loadedAudioKey.value) {
-            audioPlayer.setMediaItem(
-                MediaItem.Builder()
-                    .setUri(c.uri)
-                    .setClippingConfiguration(
-                        MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(c.inMs)
-                            .setEndPositionMs(c.outMs)
-                            .build()
-                    )
-                    .build()
-            )
-            audioPlayer.prepare()
-            loadedAudioKey.value = key
-            reloaded = true
-        }
-        audioPlayer.volume = c.volume
-        val rel = playheadMs - c.offsetMs
-        if (!playing) {
-            audioPlayer.playWhenReady = false
-            return
-        }
-        if (reloaded || !audioPlayer.isPlaying || abs(audioPlayer.currentPosition - rel) > 300L) {
-            audioPlayer.seekTo(rel)
-        }
-        audioPlayer.playWhenReady = true
     }
 
     // Rebuild the playlist when clips change (not when only a volume changes)
@@ -132,12 +145,12 @@ fun VideoPreview(
         applyClipVolume(player)
     }
 
-    // Audio clips changed (moved, trimmed, split, added...)
+    // Audio clips changed (moved, trimmed, split, added, undone...)
     LaunchedEffect(audioClips) {
         syncAudio(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
     }
 
-    // Play / pause both players together
+    // Play / pause all players together
     LaunchedEffect(isPlaying) {
         if (isPlaying && player.playbackState == Player.STATE_ENDED) {
             player.seekTo(0, 0L)
