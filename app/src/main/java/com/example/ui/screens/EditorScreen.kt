@@ -74,6 +74,8 @@ fun EditorScreen(
     var extracting by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+    // The volume bar only appears after the Volume tool is pressed
+    var showVolumeBar by rememberSaveable { mutableStateOf(false) }
     val timelineScroll = rememberScrollState()
 
     // Open the current project once (if the timeline is empty, e.g. after a restart)
@@ -413,54 +415,56 @@ fun EditorScreen(
             }
         }
 
-        // --- SOUND CONTROLS: the selected clip, or the music ---
-        if (musicMode && musicTrack != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Music", fontSize = 11.sp, color = Color.White)
-                Slider(
-                    value = musicTrack.volume,
-                    onValueChange = { TimelineModel.setMusicVolume(it) },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFFFF5238),
-                        activeTrackColor = Color(0xFFFF5238)
-                    ),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                )
-                Text("${(musicTrack.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
-            }
-        } else if (selectedClip != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = {
-                    TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
-                }) {
-                    Icon(
-                        imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                        contentDescription = "Clip sound",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
+        // --- VOLUME BAR (only after the Volume button is pressed) ---
+        if (showVolumeBar) {
+            if (musicMode && musicTrack != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Music", fontSize = 11.sp, color = Color.White)
+                    Slider(
+                        value = musicTrack.volume,
+                        onValueChange = { TimelineModel.setMusicVolume(it) },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFFFF5238),
+                            activeTrackColor = Color(0xFFFF5238)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                     )
+                    Text("${(musicTrack.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
                 }
-                Text("Clip sound", fontSize = 11.sp, color = Color.White)
-                Slider(
-                    value = selectedClip.volume,
-                    onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFFFF5238),
-                        activeTrackColor = Color(0xFFFF5238)
-                    ),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                )
-                Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+            } else if (selectedClip != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = {
+                        TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
+                    }) {
+                        Icon(
+                            imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                            contentDescription = "Clip sound",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Text("Clip sound", fontSize = 11.sp, color = Color.White)
+                    Slider(
+                        value = selectedClip.volume,
+                        onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFFFF5238),
+                            activeTrackColor = Color(0xFFFF5238)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                }
             }
         }
 
@@ -491,6 +495,9 @@ fun EditorScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                ToolButton("Volume", Icons.Default.VolumeUp, enabled = true) {
+                    showVolumeBar = !showVolumeBar
+                }
                 ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
                     TimelineModel.trimMusicStartToPlayhead()
                 }
@@ -512,6 +519,11 @@ fun EditorScreen(
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                item {
+                    ToolButton("Volume", Icons.Default.VolumeUp, enabled = hasSelection && videoTools) {
+                        showVolumeBar = !showVolumeBar
+                    }
+                }
                 item {
                     ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo && videoTools) {
                         TimelineModel.splitAtPlayhead()
