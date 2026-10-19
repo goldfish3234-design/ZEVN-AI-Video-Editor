@@ -2,6 +2,7 @@ package com.example.ui.media
 
 import android.content.Context
 import android.net.Uri
+import com.example.ui.text.TextClip
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -9,13 +10,14 @@ import java.util.UUID
 
 /**
  * Everything needed to rebuild one project in the editor.
- * [music] is the list of audio clips (the audio track).
+ * [music] is the list of audio clips (the audio track). [texts] are the text overlays.
  */
 data class ProjectState(
     val name: String,
     val sources: List<Source>,
     val segments: List<Segment>,
-    val music: List<MusicTrack>
+    val music: List<MusicTrack>,
+    val texts: List<TextClip> = emptyList()
 )
 
 /** One row in the Drafts list. */
@@ -148,6 +150,25 @@ object ProjectStore {
         }
         root.put("audio", audio)
 
+        val texts = JSONArray()
+        for (t in state.texts) {
+            texts.put(
+                JSONObject()
+                    .put("id", t.id)
+                    .put("text", t.text)
+                    .put("startMs", t.startMs)
+                    .put("durationMs", t.durationMs)
+                    .put("fontId", t.fontId)
+                    .put("sizeSp", t.sizeSp.toDouble())
+                    .put("colorArgb", t.colorArgb)
+                    .put("bold", t.bold)
+                    .put("background", t.background)
+                    .put("xFrac", t.xFrac.toDouble())
+                    .put("yFrac", t.yFrac.toDouble())
+            )
+        }
+        root.put("texts", texts)
+
         File(projectDir(context, id), "project.json").writeText(root.toString())
     }
 
@@ -186,6 +207,20 @@ object ProjectStore {
         outMs = o.getLong("outMs")
     )
 
+    private fun parseText(o: JSONObject): TextClip = TextClip(
+        id = o.getLong("id"),
+        text = o.getString("text"),
+        startMs = o.getLong("startMs"),
+        durationMs = o.getLong("durationMs"),
+        fontId = o.optString("fontId", "default"),
+        sizeSp = o.optDouble("sizeSp", 28.0).toFloat(),
+        colorArgb = o.optLong("colorArgb", 0xFFFFFFFFL),
+        bold = o.optBoolean("bold", true),
+        background = o.optBoolean("background", false),
+        xFrac = o.optDouble("xFrac", 0.08).toFloat(),
+        yFrac = o.optDouble("yFrac", 0.8).toFloat()
+    )
+
     private fun read(context: Context, id: String): ProjectState? {
         val file = File(projectDir(context, id), "project.json")
         if (!file.exists()) return null
@@ -222,11 +257,16 @@ object ProjectStore {
                 audio.add(parseAudio(root.getJSONObject("music")))
             }
 
+            val texts = mutableListOf<TextClip>()
+            val textArr = root.optJSONArray("texts") ?: JSONArray()
+            for (i in 0 until textArr.length()) texts.add(parseText(textArr.getJSONObject(i)))
+
             ProjectState(
                 name = root.optString("name", "Untitled"),
                 sources = sources,
                 segments = segments,
-                music = audio
+                music = audio,
+                texts = texts
             )
         } catch (e: Exception) {
             null
