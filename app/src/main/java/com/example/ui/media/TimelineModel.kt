@@ -36,10 +36,13 @@ enum class ActiveTrack { VIDEO, MUSIC }
 
 /**
  * Timeline state. The video track is a list of segments; the audio track is a list of audio clips.
+ * Undo/redo covers both tracks. Continuous changes (sliders, dragging) are not added to history.
  * Times in the public API are timeline time (ms) unless stated otherwise.
  */
 object TimelineModel {
     private const val MIN_SEGMENT_MS = 300L
+
+    private data class Snapshot(val segments: List<Segment>, val audio: List<MusicTrack>)
 
     private val _sources = MutableStateFlow<List<Source>>(emptyList())
     val sources: StateFlow<List<Source>> = _sources.asStateFlow()
@@ -74,8 +77,8 @@ object TimelineModel {
     private val _selectedAudio = MutableStateFlow(-1)
     val selectedAudio: StateFlow<Int> = _selectedAudio.asStateFlow()
 
-    private val undoStack = ArrayList<List<Segment>>()
-    private val redoStack = ArrayList<List<Segment>>()
+    private val undoStack = ArrayList<Snapshot>()
+    private val redoStack = ArrayList<Snapshot>()
     private var clipboard: List<Segment> = emptyList()
     private var audioClipboard: MusicTrack? = null
     private var seekCounter = 0L
@@ -87,15 +90,42 @@ object TimelineModel {
         _activeTrack.value = track
     }
 
-    /** Adds an imported video to the end of the timeline. */
-    fun addSource(uri: Uri, durationMs: Long) {
-        if (durationMs <= 0L) return
-        val index = _sources.value.size
-        _sources.value = _sources.value + Source(uri, durationMs)
-        commit(_segments.value + Segment(index, 0L, durationMs))
+    // ---------------- History (undo / redo) ----------------
+
+    /** Saves the current state before a discrete change. */
+    private fun recordHistory() {
+        undoStack.add(Snapshot(_segments.value, _audio.value))
+        redoStack.clear()
+        updateFlags()
     }
 
-    /** Replaces the whole timeline (used when opening a project). */
+    private fun updateFlags() {
+        _canUndo.value = undoStack.isNotEmpty()
+        _canRedo.value = redoStack.isNotEmpty()
+    }
+
+    private fun applySnapshot(s: Snapshot) {
+        _segments.value = s.segments
+        _audio.value = s.audio
+        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
+        if (_selected.value !in s.segments.indices) _selected.value = -1
+        if (_selectedAudio.value !in s.audio.indices) _selectedAudio.value = -1
+        updateFlags()
+    }
+
+    fun undo() {
+        if (undoStack.isEmpty()) return
+        redoStack.add(Snapshot(_segments.value, _audio.value))
+        applySnapshot(undoStack.removeAt(undoStack.size - 1))
+    }
+
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        undoStack.add(Snapshot(_segments.value, _audio.value))
+        applySnapshot(redoStack.removeAt(redoStack.size - 1))
+    }
+
+    /** Replaces the whole timeline (used when opening a project). Clears history. */
     fun restore(sources: List<Source>, segments: List<Segment>, audio: List<MusicTrack>) {
         _sources.value = sources
         _segments.value = segments
@@ -117,7 +147,7 @@ object TimelineModel {
         restore(sources, segments, listOfNotNull(music))
     }
 
-    /** Sets the sound level of one video clip. Not added to undo history (slider changes are continuous). */
+    /** Sets the sound level of one video clip. Not added to history (slider changes are continuous). */
     fun setSegmentVolume(index: Int, volume: Float) {
         val list = _segments.value
         if (index !in list.indices) return
@@ -131,6 +161,7 @@ object TimelineModel {
     /** Adds an audio clip at [offsetMs] (default: the playhead). */
     fun addAudio(uri: Uri, durationMs: Long, offsetMs: Long = _playheadMs.value) {
         if (durationMs <= 0L) return
+        recordHistory()
         val clip = MusicTrack(uri, durationMs, 1f, offsetMs.coerceAtLeast(0L), 0L, durationMs)
         _audio.value = _audio.value + clip
         _selectedAudio.value = _audio.value.lastIndex
@@ -150,24 +181,56 @@ object TimelineModel {
     fun audioIndexAt(timeMs: Long): Int =
         _audio.value.indexOfFirst { timeMs >= it.offsetMs && timeMs < it.offsetMs + it.lengthMs }
 
+    /**
+     * Groups audio clips into lanes so that clips in one lane never overlap.
+     * Overlapping clips go to different lanes and are played (and exported) together.
+     * Each inner list holds clip indices in timeline order.
+     */
+    fun audioLanes(): List<List<Int>> {
+        val clips = _audio.value
+        val order = clips.indices.sortedBy { clips[it].offsetMs }
+        val laneEnds = ArrayList<Long>()
+        val lanes = ArrayList<MutableList<Int>>()
+        for (i in order) {
+            val start = clips[i].offsetMs
+            val end = start + clips[i].lengthMs
+            var placed = false
+            for (l in laneEnds.indices) {
+                if (laneEnds[l] <= start) {
+                    laneEnds[l] = end
+                    lanes[l].add(i)
+                    placed = true
+                    break
+                }
+            }
+            if (!placed) {
+                laneEnds.add(end)
+                lanes.add(mutableListOf(i))
+            }
+        }
+        return lanes
+    }
+
     private fun setAudioAt(index: Int, clip: MusicTrack) {
         val list = ArrayList<MusicTrack>(_audio.value)
         list[index] = clip
         _audio.value = list
     }
 
+    /** Volume of one audio clip. Not added to history (slider changes are continuous). */
     fun setAudioVolume(index: Int, volume: Float) {
         val c = _audio.value.getOrNull(index) ?: return
         setAudioAt(index, c.copy(volume = volume.coerceIn(0f, 1f)))
     }
 
+    /** Moves a clip while dragging. Not added to history on each step. */
     fun moveAudioBy(index: Int, deltaMs: Long) {
         val c = _audio.value.getOrNull(index) ?: return
         val newOffset = (c.offsetMs + deltaMs).coerceIn(0L, totalDurationMs)
         setAudioAt(index, c.copy(offsetMs = newOffset))
     }
 
-    /** Moves the clip's start edge by [deltaMs]; the clip keeps its place on the timeline. */
+    /** Moves the clip's start edge while dragging. Not added to history on each step. */
     fun trimAudioStartBy(index: Int, deltaMs: Long) {
         val c = _audio.value.getOrNull(index) ?: return
         val lo = maxOf(-c.inMs, -c.offsetMs)
@@ -178,7 +241,7 @@ object TimelineModel {
         setAudioAt(index, c.copy(offsetMs = c.offsetMs + d, inMs = c.inMs + d))
     }
 
-    /** Moves the clip's end edge by [deltaMs]. */
+    /** Moves the clip's end edge while dragging. Not added to history on each step. */
     fun trimAudioEndBy(index: Int, deltaMs: Long) {
         val c = _audio.value.getOrNull(index) ?: return
         val lo = MIN_SEGMENT_MS - c.lengthMs
@@ -193,6 +256,7 @@ object TimelineModel {
         val c = _audio.value.getOrNull(index) ?: return
         val rel = _playheadMs.value - c.offsetMs
         if (rel <= 0L || rel >= c.lengthMs - MIN_SEGMENT_MS) return
+        recordHistory()
         setAudioAt(index, c.copy(offsetMs = _playheadMs.value, inMs = c.inMs + rel))
     }
 
@@ -200,6 +264,7 @@ object TimelineModel {
         val c = _audio.value.getOrNull(index) ?: return
         val rel = _playheadMs.value - c.offsetMs
         if (rel < MIN_SEGMENT_MS || rel >= c.lengthMs) return
+        recordHistory()
         setAudioAt(index, c.copy(outMs = c.inMs + rel))
     }
 
@@ -211,6 +276,7 @@ object TimelineModel {
         val c = _audio.value[index]
         val rel = t - c.offsetMs
         if (rel < MIN_SEGMENT_MS || c.lengthMs - rel < MIN_SEGMENT_MS) return
+        recordHistory()
         val left = c.copy(outMs = c.inMs + rel)
         val right = c.copy(offsetMs = c.offsetMs + rel, inMs = c.inMs + rel)
         val list = ArrayList<MusicTrack>(_audio.value)
@@ -222,6 +288,7 @@ object TimelineModel {
 
     fun deleteAudio(index: Int) {
         if (index !in _audio.value.indices) return
+        recordHistory()
         val list = ArrayList<MusicTrack>(_audio.value)
         list.removeAt(index)
         _audio.value = list
@@ -243,6 +310,7 @@ object TimelineModel {
     /** Pastes the copied audio clip at the playhead. */
     fun pasteAudioAtPlayhead() {
         val c = audioClipboard ?: return
+        recordHistory()
         val clip = c.copy(offsetMs = _playheadMs.value)
         _audio.value = _audio.value + clip
         _selectedAudio.value = _audio.value.lastIndex
@@ -291,37 +359,13 @@ object TimelineModel {
 
     // ---------------- Video edits ----------------
 
-    private fun updateFlags() {
-        _canUndo.value = undoStack.isNotEmpty()
-        _canRedo.value = redoStack.isNotEmpty()
-    }
-
-    private fun commit(newList: List<Segment>) {
-        if (newList.isEmpty()) return
-        undoStack.add(_segments.value)
-        redoStack.clear()
-        _segments.value = newList
-        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
-        if (_selected.value !in newList.indices) _selected.value = -1
-        updateFlags()
-    }
-
-    fun undo() {
-        if (undoStack.isEmpty()) return
-        redoStack.add(_segments.value)
-        _segments.value = undoStack.removeAt(undoStack.size - 1)
-        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
-        if (_selected.value !in _segments.value.indices) _selected.value = -1
-        updateFlags()
-    }
-
-    fun redo() {
-        if (redoStack.isEmpty()) return
-        undoStack.add(_segments.value)
-        _segments.value = redoStack.removeAt(redoStack.size - 1)
-        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
-        if (_selected.value !in _segments.value.indices) _selected.value = -1
-        updateFlags()
+    /** Adds an imported video to the end of the timeline. */
+    fun addSource(uri: Uri, durationMs: Long) {
+        if (durationMs <= 0L) return
+        recordHistory()
+        val index = _sources.value.size
+        _sources.value = _sources.value + Source(uri, durationMs)
+        _segments.value = _segments.value + Segment(index, 0L, durationMs)
     }
 
     /** Returns a new list with the segment containing [timeMs] split in two (if both parts are long enough). */
@@ -351,7 +395,8 @@ object TimelineModel {
         val list = _segments.value
         val newList = splitList(list, t)
         if (newList.size == list.size) return
-        commit(newList)
+        recordHistory()
+        _segments.value = newList
         selectAtTime(t)
     }
 
@@ -359,7 +404,8 @@ object TimelineModel {
         val i = _selected.value
         val list = _segments.value
         if (i !in list.indices || list.size <= 1) return
-        commit(list.filterIndexed { idx, _ -> idx != i })
+        recordHistory()
+        _segments.value = list.filterIndexed { idx, _ -> idx != i }
         _selected.value = -1
     }
 
@@ -389,7 +435,8 @@ object TimelineModel {
         }
         val out = ArrayList<Segment>(split)
         out.addAll(insertAt, clipboard)
-        commit(out)
+        recordHistory()
+        _segments.value = out
     }
 
     /** Timeline time where the selected segment starts, or null if nothing is selected. */
@@ -409,9 +456,10 @@ object TimelineModel {
         val s = list[i]
         val rel = _playheadMs.value - start
         if (rel <= 0L || s.durationMs - rel < MIN_SEGMENT_MS) return
+        recordHistory()
         val out = ArrayList<Segment>(list)
         out[i] = s.copy(startMs = s.startMs + rel)
-        commit(out)
+        _segments.value = out
     }
 
     fun trimEndToPlayhead() {
@@ -421,8 +469,9 @@ object TimelineModel {
         val s = list[i]
         val rel = _playheadMs.value - start
         if (rel < MIN_SEGMENT_MS || rel >= s.durationMs) return
+        recordHistory()
         val out = ArrayList<Segment>(list)
         out[i] = s.copy(endMs = s.startMs + rel)
-        commit(out)
+        _segments.value = out
     }
 }
