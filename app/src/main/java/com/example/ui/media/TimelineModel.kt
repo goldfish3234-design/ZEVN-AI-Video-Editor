@@ -17,7 +17,7 @@ data class Segment(val source: Int, val startMs: Long, val endMs: Long, val volu
 data class SeekRequest(val ms: Long, val id: Long)
 
 /**
- * Background music / extracted audio.
+ * One audio clip (music or audio extracted from a video).
  * [offsetMs] is where it starts on the timeline. [inMs]..[outMs] is the part of the audio file that is used.
  */
 data class MusicTrack(
@@ -35,7 +35,8 @@ data class MusicTrack(
 enum class ActiveTrack { VIDEO, MUSIC }
 
 /**
- * Timeline state. Times in the public API are timeline time (ms) unless stated otherwise.
+ * Timeline state. The video track is a list of segments; the audio track is a list of audio clips.
+ * Times in the public API are timeline time (ms) unless stated otherwise.
  */
 object TimelineModel {
     private const val MIN_SEGMENT_MS = 300L
@@ -67,12 +68,16 @@ object TimelineModel {
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
-    private val _music = MutableStateFlow<MusicTrack?>(null)
-    val music: StateFlow<MusicTrack?> = _music.asStateFlow()
+    private val _audio = MutableStateFlow<List<MusicTrack>>(emptyList())
+    val audio: StateFlow<List<MusicTrack>> = _audio.asStateFlow()
+
+    private val _selectedAudio = MutableStateFlow(-1)
+    val selectedAudio: StateFlow<Int> = _selectedAudio.asStateFlow()
 
     private val undoStack = ArrayList<List<Segment>>()
     private val redoStack = ArrayList<List<Segment>>()
     private var clipboard: List<Segment> = emptyList()
+    private var audioClipboard: MusicTrack? = null
     private var seekCounter = 0L
 
     val totalDurationMs: Long
@@ -91,21 +96,28 @@ object TimelineModel {
     }
 
     /** Replaces the whole timeline (used when opening a project). */
-    fun restore(sources: List<Source>, segments: List<Segment>, music: MusicTrack?) {
+    fun restore(sources: List<Source>, segments: List<Segment>, audio: List<MusicTrack>) {
         _sources.value = sources
         _segments.value = segments
-        _music.value = music
+        _audio.value = audio
         undoStack.clear()
         redoStack.clear()
         clipboard = emptyList()
+        audioClipboard = null
         _selected.value = -1
+        _selectedAudio.value = -1
         _activeTrack.value = ActiveTrack.VIDEO
         _playheadMs.value = 0L
         _isPlaying.value = false
         updateFlags()
     }
 
-    /** Sets the sound level of one clip. Not added to undo history (slider changes are continuous). */
+    /** Same as above for a single optional audio clip. */
+    fun restore(sources: List<Source>, segments: List<Segment>, music: MusicTrack?) {
+        restore(sources, segments, listOfNotNull(music))
+    }
+
+    /** Sets the sound level of one video clip. Not added to undo history (slider changes are continuous). */
     fun setSegmentVolume(index: Int, volume: Float) {
         val list = _segments.value
         if (index !in list.indices) return
@@ -114,65 +126,130 @@ object TimelineModel {
         _segments.value = out
     }
 
-    fun setMusic(uri: Uri, durationMs: Long) {
+    // ---------------- Audio track ----------------
+
+    /** Adds an audio clip at [offsetMs] (default: the playhead). */
+    fun addAudio(uri: Uri, durationMs: Long, offsetMs: Long = _playheadMs.value) {
         if (durationMs <= 0L) return
-        _music.value = MusicTrack(uri, durationMs)
+        val clip = MusicTrack(uri, durationMs, 1f, offsetMs.coerceAtLeast(0L), 0L, durationMs)
+        _audio.value = _audio.value + clip
+        _selectedAudio.value = _audio.value.lastIndex
+        _activeTrack.value = ActiveTrack.MUSIC
     }
 
-    fun setMusicVolume(volume: Float) {
-        val m = _music.value ?: return
-        _music.value = m.copy(volume = volume.coerceIn(0f, 1f))
+    fun selectAudio(index: Int) {
+        if (index in _audio.value.indices) {
+            _selectedAudio.value = index
+            _activeTrack.value = ActiveTrack.MUSIC
+        } else {
+            _selectedAudio.value = -1
+        }
     }
 
-    fun removeMusic() {
-        _music.value = null
-        if (_activeTrack.value == ActiveTrack.MUSIC) _activeTrack.value = ActiveTrack.VIDEO
+    /** Index of the audio clip under [timeMs], or -1. */
+    fun audioIndexAt(timeMs: Long): Int =
+        _audio.value.indexOfFirst { timeMs >= it.offsetMs && timeMs < it.offsetMs + it.lengthMs }
+
+    private fun setAudioAt(index: Int, clip: MusicTrack) {
+        val list = ArrayList<MusicTrack>(_audio.value)
+        list[index] = clip
+        _audio.value = list
     }
 
-    /** Moves the music start by [deltaMs] on the timeline. */
-    fun moveMusicBy(deltaMs: Long) {
-        val m = _music.value ?: return
-        val newOffset = (m.offsetMs + deltaMs).coerceIn(0L, totalDurationMs)
-        _music.value = m.copy(offsetMs = newOffset)
+    fun setAudioVolume(index: Int, volume: Float) {
+        val c = _audio.value.getOrNull(index) ?: return
+        setAudioAt(index, c.copy(volume = volume.coerceIn(0f, 1f)))
     }
 
-    /** Moves the music's start edge by [deltaMs]. The music keeps its position on the timeline. */
-    fun trimMusicStartBy(deltaMs: Long) {
-        val m = _music.value ?: return
-        val lo = maxOf(-m.inMs, -m.offsetMs)
-        val hi = m.lengthMs - MIN_SEGMENT_MS
+    fun moveAudioBy(index: Int, deltaMs: Long) {
+        val c = _audio.value.getOrNull(index) ?: return
+        val newOffset = (c.offsetMs + deltaMs).coerceIn(0L, totalDurationMs)
+        setAudioAt(index, c.copy(offsetMs = newOffset))
+    }
+
+    /** Moves the clip's start edge by [deltaMs]; the clip keeps its place on the timeline. */
+    fun trimAudioStartBy(index: Int, deltaMs: Long) {
+        val c = _audio.value.getOrNull(index) ?: return
+        val lo = maxOf(-c.inMs, -c.offsetMs)
+        val hi = c.lengthMs - MIN_SEGMENT_MS
         if (hi < lo) return
         val d = deltaMs.coerceIn(lo, hi)
         if (d == 0L) return
-        _music.value = m.copy(offsetMs = m.offsetMs + d, inMs = m.inMs + d)
+        setAudioAt(index, c.copy(offsetMs = c.offsetMs + d, inMs = c.inMs + d))
     }
 
-    /** Moves the music's end edge by [deltaMs]. */
-    fun trimMusicEndBy(deltaMs: Long) {
-        val m = _music.value ?: return
-        val lo = MIN_SEGMENT_MS - m.lengthMs
-        val hi = m.fileDurationMs - m.outMs
+    /** Moves the clip's end edge by [deltaMs]. */
+    fun trimAudioEndBy(index: Int, deltaMs: Long) {
+        val c = _audio.value.getOrNull(index) ?: return
+        val lo = MIN_SEGMENT_MS - c.lengthMs
+        val hi = c.fileDurationMs - c.outMs
         if (hi < lo) return
         val d = deltaMs.coerceIn(lo, hi)
         if (d == 0L) return
-        _music.value = m.copy(outMs = m.outMs + d)
+        setAudioAt(index, c.copy(outMs = c.outMs + d))
     }
 
-    /** Cuts the music start at the playhead (only if the playhead is inside the music). */
-    fun trimMusicStartToPlayhead() {
-        val m = _music.value ?: return
-        val rel = _playheadMs.value - m.offsetMs
-        if (rel <= 0L || rel >= m.lengthMs - MIN_SEGMENT_MS) return
-        _music.value = m.copy(offsetMs = _playheadMs.value, inMs = m.inMs + rel)
+    fun trimAudioStartToPlayhead(index: Int) {
+        val c = _audio.value.getOrNull(index) ?: return
+        val rel = _playheadMs.value - c.offsetMs
+        if (rel <= 0L || rel >= c.lengthMs - MIN_SEGMENT_MS) return
+        setAudioAt(index, c.copy(offsetMs = _playheadMs.value, inMs = c.inMs + rel))
     }
 
-    /** Cuts the music end at the playhead (only if the playhead is inside the music). */
-    fun trimMusicEndToPlayhead() {
-        val m = _music.value ?: return
-        val rel = _playheadMs.value - m.offsetMs
-        if (rel < MIN_SEGMENT_MS || rel >= m.lengthMs) return
-        _music.value = m.copy(outMs = m.inMs + rel)
+    fun trimAudioEndToPlayhead(index: Int) {
+        val c = _audio.value.getOrNull(index) ?: return
+        val rel = _playheadMs.value - c.offsetMs
+        if (rel < MIN_SEGMENT_MS || rel >= c.lengthMs) return
+        setAudioAt(index, c.copy(outMs = c.inMs + rel))
     }
+
+    /** Splits the audio clip under the playhead into two clips. */
+    fun splitAudioAtPlayhead() {
+        val t = _playheadMs.value
+        val index = audioIndexAt(t)
+        if (index < 0) return
+        val c = _audio.value[index]
+        val rel = t - c.offsetMs
+        if (rel < MIN_SEGMENT_MS || c.lengthMs - rel < MIN_SEGMENT_MS) return
+        val left = c.copy(outMs = c.inMs + rel)
+        val right = c.copy(offsetMs = c.offsetMs + rel, inMs = c.inMs + rel)
+        val list = ArrayList<MusicTrack>(_audio.value)
+        list[index] = left
+        list.add(index + 1, right)
+        _audio.value = list
+        _selectedAudio.value = index + 1
+    }
+
+    fun deleteAudio(index: Int) {
+        if (index !in _audio.value.indices) return
+        val list = ArrayList<MusicTrack>(_audio.value)
+        list.removeAt(index)
+        _audio.value = list
+        _selectedAudio.value = -1
+        if (list.isEmpty() && _activeTrack.value == ActiveTrack.MUSIC) _activeTrack.value = ActiveTrack.VIDEO
+    }
+
+    fun copyAudio(index: Int) {
+        audioClipboard = _audio.value.getOrNull(index)
+    }
+
+    fun cutAudio(index: Int) {
+        if (index in _audio.value.indices) {
+            copyAudio(index)
+            deleteAudio(index)
+        }
+    }
+
+    /** Pastes the copied audio clip at the playhead. */
+    fun pasteAudioAtPlayhead() {
+        val c = audioClipboard ?: return
+        val clip = c.copy(offsetMs = _playheadMs.value)
+        _audio.value = _audio.value + clip
+        _selectedAudio.value = _audio.value.lastIndex
+        _activeTrack.value = ActiveTrack.MUSIC
+    }
+
+    // ---------------- Playback ----------------
 
     /** Maps a timeline time to (segment index, position inside that segment). */
     fun locate(timeMs: Long): Pair<Int, Long> {
@@ -211,6 +288,8 @@ object TimelineModel {
             _activeTrack.value = ActiveTrack.VIDEO
         }
     }
+
+    // ---------------- Video edits ----------------
 
     private fun updateFlags() {
         _canUndo.value = undoStack.isNotEmpty()
