@@ -15,10 +15,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.media.Segment
+import com.example.ui.media.TimelineModel
 
 /**
- * Horizontal timeline. Each segment is a block sized by its duration.
- * Tap or drag anywhere on the track to move the playhead (and select the segment there).
+ * Video track. Each segment is a block sized by its duration.
+ * Tap or drag anywhere on the track to move the playhead. [modifier] should set the width (zoom).
  */
 @Composable
 fun TimelineView(
@@ -34,7 +35,6 @@ fun TimelineView(
 
     Box(
         modifier = modifier
-            .fillMaxWidth()
             .height(96.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(Color(0xFF14141C))
