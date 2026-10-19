@@ -38,10 +38,14 @@ import com.example.R
 import com.example.data.model.AspectRatioType
 import com.example.data.model.FilterPreset
 import com.example.service.AudioRecorderManager
-import com.example.ui.components.GlassCard
 import com.example.ui.components.WaveformVisualizer
-import com.example.ui.theme.*
+import com.example.ui.media.ProjectStore
+import com.example.ui.media.ProjectSummary
+import com.example.ui.media.TimelineModel
 import com.example.ui.viewmodel.VideoEditorViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun HomeScreen(
@@ -50,7 +54,6 @@ fun HomeScreen(
     onNavigateToPricing: () -> Unit
 ) {
     val context = LocalContext.current
-    val currentProject by viewModel.currentProject.collectAsState()
     val isTranscribing by viewModel.isTranscribing.collectAsState()
     val isRecordingAudio by viewModel.isRecordingAudio.collectAsState()
     val transcribedText by viewModel.transcribedText.collectAsState()
@@ -60,6 +63,8 @@ fun HomeScreen(
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var showTranscribeDialog by remember { mutableStateOf(false) }
     var showVeoDialog by remember { mutableStateOf(false) }
+    var draftsVersion by remember { mutableIntStateOf(0) }
+    val drafts = remember(draftsVersion) { ProjectStore.list(context) }
 
     // Audio recorder manager
     val audioRecorder = remember { AudioRecorderManager(context) }
@@ -89,7 +94,7 @@ fun HomeScreen(
             .background(Color(0xFF0C0C10)),
         contentPadding = PaddingValues(bottom = 90.dp)
     ) {
-        // --- 1. HERO CARD (Matching Phone 1) ---
+        // --- 1. HERO CARD ---
         item {
             Box(
                 modifier = Modifier
@@ -124,7 +129,7 @@ fun HomeScreen(
                         )
                 )
 
-                // Typography matching "Hi! Im Clipzy, a video editor"
+                // Typography
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -159,7 +164,7 @@ fun HomeScreen(
             }
         }
 
-        // --- 2. PRIMARY "NEW PROJECT" BUTTON (Matching Phone 1 center button) ---
+        // --- 2. NEW PROJECT BUTTON ---
         item {
             Box(
                 modifier = Modifier
@@ -203,7 +208,7 @@ fun HomeScreen(
             }
         }
 
-        // --- 3. CIRCULAR QUICK ACTION TOOLS GRID (Matching Phone 1 layout) ---
+        // --- 3. QUICK ACTION TOOLS ---
         item {
             Column(
                 modifier = Modifier
@@ -278,73 +283,28 @@ fun HomeScreen(
             }
         }
 
-        // --- 4. CURRENT PROJECT QUICK RESUME CARD ---
+        // --- 4. DRAFTS (saved projects) ---
         item {
-            val proj = currentProject
-            if (proj != null) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Text(
-                        text = "Current Project",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF161622))
-                            .border(1.dp, Color(0xFF262638), RoundedCornerShape(16.dp))
-                            .clickable { onNavigateToEditor() }
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                painter = painterResource(id = proj.thumbnailRes),
-                                contentDescription = proj.title,
-                                modifier = Modifier
-                                    .size(54.dp)
-                                    .clip(RoundedCornerShape(10.dp)),
-                                contentScale = ContentScale.Crop
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = proj.title,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = Color.White
-                                )
-                                Text(
-                                    text = "0:02 / 0:58 • ${proj.resolution}",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFFA0A0B2)
-                                )
-                            }
-                        }
-
-                        Button(
-                            onClick = onNavigateToEditor,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2B2B3C)),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                        ) {
-                            Text("Edit", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
+            DraftsSection(
+                drafts = drafts,
+                onOpen = { id ->
+                    val state = ProjectStore.open(context, id)
+                    if (state != null) {
+                        TimelineModel.restore(state.sources, state.segments, state.music)
+                        onNavigateToEditor()
+                    } else {
+                        Toast.makeText(context, "This project could not be opened", Toast.LENGTH_SHORT).show()
                     }
+                },
+                onDelete = { id ->
+                    ProjectStore.delete(context, id)
+                    draftsVersion++
                 }
-            }
+            )
         }
     }
 
-    // --- DIALOG: AUDIO TRANSCRIBE WITH MICROPHONE (gemini-3.5-transcribe) ---
+    // --- DIALOG: MICROPHONE TRANSCRIBE ---
     if (showTranscribeDialog) {
         AlertDialog(
             onDismissRequest = {
@@ -469,7 +429,7 @@ fun HomeScreen(
         )
     }
 
-    // --- DIALOG: VEO VIDEO GENERATION (veo-3.1-fast-generate-preview) ---
+    // --- DIALOG: VEO VIDEO GENERATION ---
     if (showVeoDialog) {
         var promptText by remember { mutableStateOf("Cinematic runway model, dramatic red and amber lighting, high fashion 4K") }
         var selectedRatio by remember { mutableStateOf("9:16") }
@@ -592,7 +552,8 @@ fun HomeScreen(
         )
     }
 
-    // --- DIALOG: NEW PROJECT CREATION ---
+    // --- DIALOG: NEW PROJECT ---
+    // Starting a new project never touches saved ones: the old project stays in Drafts.
     if (showNewProjectDialog) {
         var projTitle by remember { mutableStateOf("New Fashion Edit") }
         var projRatio by remember { mutableStateOf(AspectRatioType.RATIO_9_16) }
@@ -646,6 +607,8 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        ProjectStore.newProject(context, projTitle)
+                        TimelineModel.restore(emptyList(), emptyList(), null)
                         viewModel.createProject(projTitle, projRatio)
                         showNewProjectDialog = false
                         onNavigateToEditor()
@@ -661,6 +624,75 @@ fun HomeScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun DraftsSection(
+    drafts: List<ProjectSummary>,
+    onOpen: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 10.dp)
+    ) {
+        Text(
+            text = "Drafts (${drafts.size})",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (drafts.isEmpty()) {
+            Text(
+                text = "No saved projects yet. Start a new project and it will be saved here automatically.",
+                fontSize = 12.sp,
+                color = Color(0xFFA0A0B2)
+            )
+        }
+        drafts.forEach { draft ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFF161622))
+                    .border(1.dp, Color(0xFF262638), RoundedCornerShape(16.dp))
+                    .clickable { onOpen(draft.id) }
+                    .padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = draft.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color.White,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = "Edited ${dateFormat.format(Date(draft.updatedAt))}",
+                        fontSize = 11.sp,
+                        color = Color(0xFFA0A0B2)
+                    )
+                }
+                Button(
+                    onClick = { onOpen(draft.id) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2B2B3C)),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Text("Open", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                IconButton(onClick = { onDelete(draft.id) }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete project", tint = Color(0xFFA0A0B2))
+                }
+            }
+        }
     }
 }
 
