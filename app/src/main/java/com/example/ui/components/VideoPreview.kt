@@ -24,7 +24,7 @@ private fun applyClipVolume(player: ExoPlayer) {
 
 /**
  * Plays the timeline: video segments one after another (each with its own sound level),
- * with the trimmed music starting at its offset on the timeline.
+ * and the audio clips at their timeline positions.
  */
 @Composable
 fun VideoPreview(
@@ -35,7 +35,7 @@ fun VideoPreview(
     val context = LocalContext.current
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val seekRequest by TimelineModel.seekRequest.collectAsState()
-    val music by TimelineModel.music.collectAsState()
+    val audioClips by TimelineModel.audio.collectAsState()
 
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -52,32 +52,57 @@ fun VideoPreview(
         }
     }
 
-    val musicPlayer = remember {
+    val audioPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
         }
     }
+    // Which audio clip is loaded in the audio player (uri + trim)
+    val loadedAudioKey = remember { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         onDispose {
             player.release()
-            musicPlayer.release()
+            audioPlayer.release()
         }
     }
 
-    // Music must be at the playhead's position while the video is playing
-    fun syncMusic(playheadMs: Long, playing: Boolean) {
-        val m = TimelineModel.music.value ?: return
-        val rel = playheadMs - m.offsetMs
-        val inside = rel >= 0L && rel < m.lengthMs
-        if (!playing || !inside) {
-            musicPlayer.playWhenReady = false
+    // Puts the audio player at the clip under the playhead (silent when there is none)
+    fun syncAudio(playheadMs: Long, playing: Boolean) {
+        val idx = TimelineModel.audioIndexAt(playheadMs)
+        if (idx < 0) {
+            audioPlayer.playWhenReady = false
             return
         }
-        if (!musicPlayer.isPlaying || abs(musicPlayer.currentPosition - rel) > 300L) {
-            musicPlayer.seekTo(rel)
+        val c = TimelineModel.audio.value[idx]
+        val key = "${c.uri}|${c.inMs}|${c.outMs}"
+        var reloaded = false
+        if (key != loadedAudioKey.value) {
+            audioPlayer.setMediaItem(
+                MediaItem.Builder()
+                    .setUri(c.uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(c.inMs)
+                            .setEndPositionMs(c.outMs)
+                            .build()
+                    )
+                    .build()
+            )
+            audioPlayer.prepare()
+            loadedAudioKey.value = key
+            reloaded = true
         }
-        musicPlayer.playWhenReady = true
+        audioPlayer.volume = c.volume
+        val rel = playheadMs - c.offsetMs
+        if (!playing) {
+            audioPlayer.playWhenReady = false
+            return
+        }
+        if (reloaded || !audioPlayer.isPlaying || abs(audioPlayer.currentPosition - rel) > 300L) {
+            audioPlayer.seekTo(rel)
+        }
+        audioPlayer.playWhenReady = true
     }
 
     // Rebuild the playlist when clips change (not when only a volume changes)
@@ -107,34 +132,9 @@ fun VideoPreview(
         applyClipVolume(player)
     }
 
-    // Music file: load the trimmed part when the file or its trim changes
-    LaunchedEffect(music?.uri, music?.inMs, music?.outMs) {
-        val m = music
-        if (m == null) {
-            musicPlayer.clearMediaItems()
-        } else {
-            musicPlayer.setMediaItem(
-                MediaItem.Builder()
-                    .setUri(m.uri)
-                    .setClippingConfiguration(
-                        MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(m.inMs)
-                            .setEndPositionMs(m.outMs)
-                            .build()
-                    )
-                    .build()
-            )
-            musicPlayer.prepare()
-            syncMusic(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
-        }
-    }
-
-    LaunchedEffect(music?.offsetMs) {
-        syncMusic(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
-    }
-
-    LaunchedEffect(music?.volume) {
-        musicPlayer.volume = music?.volume ?: 1f
+    // Audio clips changed (moved, trimmed, split, added...)
+    LaunchedEffect(audioClips) {
+        syncAudio(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
     }
 
     // Play / pause both players together
@@ -143,7 +143,7 @@ fun VideoPreview(
             player.seekTo(0, 0L)
         }
         player.playWhenReady = isPlaying
-        syncMusic(TimelineModel.playheadMs.value, isPlaying)
+        syncAudio(TimelineModel.playheadMs.value, isPlaying)
     }
 
     // Jump requested from the timeline (tap or drag)
@@ -152,7 +152,7 @@ fun VideoPreview(
         val (index, offset) = TimelineModel.locate(req.ms)
         player.seekTo(index, offset)
         applyClipVolume(player)
-        syncMusic(req.ms, TimelineModel.isPlaying.value)
+        syncAudio(req.ms, TimelineModel.isPlaying.value)
     }
 
     // Keep the timeline playhead in sync while the video plays
@@ -165,7 +165,7 @@ fun VideoPreview(
                 for (k in 0 until minOf(idx, segs.size)) before += segs[k].durationMs
                 val ph = before + player.currentPosition
                 TimelineModel.setPlayhead(ph)
-                syncMusic(ph, true)
+                syncAudio(ph, true)
             }
             delay(100L)
         }
