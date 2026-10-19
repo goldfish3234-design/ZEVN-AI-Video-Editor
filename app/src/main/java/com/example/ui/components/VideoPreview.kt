@@ -12,15 +12,19 @@ import androidx.media3.ui.PlayerView
 import com.example.ui.media.Segment
 import com.example.ui.media.Source
 import com.example.ui.media.TimelineModel
-import com.example.ui.media.VideoAudio
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 
+/** Sets the video player's volume to the sound level of the clip that is playing now. */
+private fun applyClipVolume(player: ExoPlayer) {
+    val segs = TimelineModel.segments.value
+    player.volume = segs.getOrNull(player.currentMediaItemIndex)?.volume ?: 1f
+}
+
 /**
- * Plays the timeline: video segments one after another, with the trimmed music
- * starting at its offset on the timeline.
- * Play state, playhead and seeks all go through [TimelineModel].
+ * Plays the timeline: video segments one after another (each with its own sound level),
+ * with the trimmed music starting at its offset on the timeline.
  */
 @Composable
 fun VideoPreview(
@@ -32,7 +36,6 @@ fun VideoPreview(
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val seekRequest by TimelineModel.seekRequest.collectAsState()
     val music by TimelineModel.music.collectAsState()
-    val videoVolume by VideoAudio.volume.collectAsState()
 
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -40,6 +43,10 @@ fun VideoPreview(
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == Player.STATE_ENDED) TimelineModel.setPlaying(false)
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    applyClipVolume(this@apply)
                 }
             })
         }
@@ -58,8 +65,7 @@ fun VideoPreview(
         }
     }
 
-    // Keeps the music player in step with the playhead.
-    // Music plays only while the playhead is inside the music bar.
+    // Music must be at the playhead's position while the video is playing
     fun syncMusic(playheadMs: Long, playing: Boolean) {
         val m = TimelineModel.music.value ?: return
         val rel = playheadMs - m.offsetMs
@@ -74,13 +80,9 @@ fun VideoPreview(
         musicPlayer.playWhenReady = true
     }
 
-    // Video's own sound level
-    LaunchedEffect(videoVolume) {
-        player.volume = videoVolume
-    }
-
-    // Rebuild the video playlist whenever the timeline changes (import, split, trim, paste, undo...)
-    LaunchedEffect(segments, sources) {
+    // Rebuild the playlist when clips change (not when only a volume changes)
+    val clipKey = segments.map { Triple(it.source, it.startMs, it.endMs) }
+    LaunchedEffect(clipKey, sources) {
         if (segments.isNotEmpty() && sources.isNotEmpty()) {
             val items = segments.map { seg ->
                 MediaItem.Builder()
@@ -96,7 +98,13 @@ fun VideoPreview(
             val (index, offset) = TimelineModel.locate(TimelineModel.playheadMs.value)
             player.setMediaItems(items, index, offset)
             player.prepare()
+            applyClipVolume(player)
         }
+    }
+
+    // A clip's sound level changed
+    LaunchedEffect(segments) {
+        applyClipVolume(player)
     }
 
     // Music file: load the trimmed part when the file or its trim changes
@@ -121,7 +129,6 @@ fun VideoPreview(
         }
     }
 
-    // Music moved on the timeline
     LaunchedEffect(music?.offsetMs) {
         syncMusic(TimelineModel.playheadMs.value, TimelineModel.isPlaying.value)
     }
@@ -144,6 +151,7 @@ fun VideoPreview(
         val req = seekRequest ?: return@LaunchedEffect
         val (index, offset) = TimelineModel.locate(req.ms)
         player.seekTo(index, offset)
+        applyClipVolume(player)
         syncMusic(req.ms, TimelineModel.isPlaying.value)
     }
 
