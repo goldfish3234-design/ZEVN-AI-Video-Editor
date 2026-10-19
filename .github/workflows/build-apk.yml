@@ -27,7 +27,12 @@ jobs:
       - name: Create .env from GitHub secret
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: echo "GEMINI_API_KEY=$GEMINI_API_KEY" > .env
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::GEMINI_API_KEY secret is not set. AI features will not work in this build."
+            GEMINI_API_KEY="PLACEHOLDER_KEY"
+          fi
+          echo "GEMINI_API_KEY=$GEMINI_API_KEY" > .env
 
       - name: Create debug keystore (matches app/build.gradle.kts)
         run: |
