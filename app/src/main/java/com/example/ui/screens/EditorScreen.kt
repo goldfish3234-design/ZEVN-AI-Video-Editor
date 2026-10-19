@@ -6,6 +6,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -53,6 +54,9 @@ import kotlinx.coroutines.withContext
 
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 6f
+
+private val ActiveBorder = Color(0xFFFF5238)
+private val InactiveBorder = Color(0xFF2A2A38)
 
 @Composable
 fun EditorScreen(
@@ -419,29 +423,64 @@ fun EditorScreen(
                 }
         ) {
             val contentWidth = maxWidth * zoom
-            Column(modifier = Modifier.horizontalScroll(timelineScroll)) {
-                TimelineView(
-                    segments = segments,
-                    selectedIndex = selected,
-                    playheadMs = playhead,
-                    totalMs = total,
-                    onTimeChosen = { t ->
-                        TimelineModel.requestSeek(t)
-                        TimelineModel.selectAtTime(t)
-                    },
-                    modifier = Modifier.width(contentWidth)
-                )
-                if (audioClips.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    MusicTrackView(
-                        clips = audioClips,
+            val playFrac = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+            Box(modifier = Modifier.horizontalScroll(timelineScroll)) {
+                Column(modifier = Modifier.width(contentWidth)) {
+                    // The track being edited has a bright border
+                    TimelineView(
+                        segments = segments,
+                        selectedIndex = selected,
+                        playheadMs = playhead,
                         totalMs = total,
-                        selectedIndex = selectedAudio,
-                        onSelect = { i -> TimelineModel.selectAudio(i) },
-                        onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
-                        onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
-                        onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
-                        modifier = Modifier.width(contentWidth)
+                        onTimeChosen = { t ->
+                            TimelineModel.requestSeek(t)
+                            TimelineModel.selectAtTime(t)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                width = 2.dp,
+                                color = if (activeTrack == ActiveTrack.VIDEO) ActiveBorder else InactiveBorder,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    )
+                    if (audioClips.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        MusicTrackView(
+                            clips = audioClips,
+                            totalMs = total,
+                            selectedIndex = selectedAudio,
+                            onSelect = { i -> TimelineModel.selectAudio(i) },
+                            onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
+                            onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
+                            onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(
+                                    width = 2.dp,
+                                    color = if (activeTrack == ActiveTrack.MUSIC) ActiveBorder else InactiveBorder,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        )
+                    }
+                }
+
+                // One playhead line across BOTH the video and audio tracks, with a handle on top
+                Box(modifier = Modifier.matchParentSize()) {
+                    Box(
+                        modifier = Modifier
+                            .offset(x = contentWidth * playFrac - (3.dp / 2))
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .background(Color.White)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .offset(x = contentWidth * playFrac - 8.dp, y = (-4).dp)
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .background(Color.White)
                     )
                 }
             }
