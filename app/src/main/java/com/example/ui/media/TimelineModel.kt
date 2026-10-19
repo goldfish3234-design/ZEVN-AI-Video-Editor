@@ -16,8 +16,20 @@ data class Segment(val source: Int, val startMs: Long, val endMs: Long) {
 /** Asks the player to jump to a timeline position. The id makes repeated seeks to the same spot trigger again. */
 data class SeekRequest(val ms: Long, val id: Long)
 
-/** Background music. Plays from timeline start, loops if shorter than the video. */
-data class MusicTrack(val uri: Uri, val durationMs: Long, val volume: Float = 1f)
+/**
+ * Background music.
+ * [offsetMs] is where it starts on the timeline. [inMs]..[outMs] is the part of the audio file that is used.
+ */
+data class MusicTrack(
+    val uri: Uri,
+    val fileDurationMs: Long,
+    val volume: Float = 1f,
+    val offsetMs: Long = 0L,
+    val inMs: Long = 0L,
+    val outMs: Long = fileDurationMs
+) {
+    val lengthMs: Long get() = outMs - inMs
+}
 
 /**
  * Timeline state.
@@ -96,6 +108,29 @@ object TimelineModel {
 
     fun removeMusic() {
         _music.value = null
+    }
+
+    /** Moves the music start by [deltaMs] on the timeline. */
+    fun moveMusicBy(deltaMs: Long) {
+        val m = _music.value ?: return
+        val newOffset = (m.offsetMs + deltaMs).coerceIn(0L, totalDurationMs)
+        _music.value = m.copy(offsetMs = newOffset)
+    }
+
+    /** Cuts the music start at the playhead (only if the playhead is inside the music). */
+    fun trimMusicStartToPlayhead() {
+        val m = _music.value ?: return
+        val rel = _playheadMs.value - m.offsetMs
+        if (rel <= 0L || rel >= m.lengthMs - MIN_SEGMENT_MS) return
+        _music.value = m.copy(offsetMs = _playheadMs.value, inMs = m.inMs + rel)
+    }
+
+    /** Cuts the music end at the playhead (only if the playhead is inside the music). */
+    fun trimMusicEndToPlayhead() {
+        val m = _music.value ?: return
+        val rel = _playheadMs.value - m.offsetMs
+        if (rel < MIN_SEGMENT_MS || rel >= m.lengthMs) return
+        _music.value = m.copy(outMs = m.inMs + rel)
     }
 
     /** Maps a timeline time to (segment index, position inside that segment). */
