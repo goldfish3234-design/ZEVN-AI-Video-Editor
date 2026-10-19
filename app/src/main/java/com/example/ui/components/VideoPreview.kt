@@ -13,6 +13,7 @@ import androidx.media3.ui.PlayerView
 import com.example.ui.media.Segment
 import com.example.ui.media.Source
 import com.example.ui.media.TimelineModel
+import com.example.ui.media.VideoAudio
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -31,6 +32,7 @@ fun VideoPreview(
     val isPlaying by TimelineModel.isPlaying.collectAsState()
     val seekRequest by TimelineModel.seekRequest.collectAsState()
     val music by TimelineModel.music.collectAsState()
+    val videoVolume by VideoAudio.volume.collectAsState()
 
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -54,6 +56,11 @@ fun VideoPreview(
             player.release()
             musicPlayer.release()
         }
+    }
+
+    // Video's own sound level (mute / slider)
+    LaunchedEffect(videoVolume) {
+        player.volume = videoVolume
     }
 
     // Rebuild the video playlist whenever the timeline changes (import, split, trim, paste, undo...)
