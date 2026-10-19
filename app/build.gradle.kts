@@ -126,6 +126,11 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
+
+  // Media3 video playback (gallery video preview in the editor)
+  implementation("androidx.media3:media3-exoplayer:1.5.1")
+  implementation("androidx.media3:media3-ui:1.5.1")
+
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
