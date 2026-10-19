@@ -7,6 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -24,6 +26,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -46,6 +50,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private const val MIN_ZOOM = 1f
+private const val MAX_ZOOM = 6f
 
 @Composable
 fun EditorScreen(
@@ -354,18 +361,18 @@ fun EditorScreen(
             )
         }
 
-        // --- ZOOM CONTROLS ---
+        // --- ZOOM CONTROLS (buttons; pinch on the timeline also works) ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(1f) }) {
+            IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(MIN_ZOOM) }) {
                 Icon(Icons.Default.Remove, contentDescription = "Zoom out", tint = Color.White)
             }
             Text(text = "${"%.1f".format(zoom)}x", fontSize = 11.sp, color = Color.White)
-            IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(6f) }) {
+            IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(MAX_ZOOM) }) {
                 Icon(Icons.Default.Add, contentDescription = "Zoom in", tint = Color.White)
             }
             Slider(
@@ -380,11 +387,33 @@ fun EditorScreen(
             )
         }
 
-        // --- TIMELINE (video + music), scrolls horizontally when zoomed ---
+        // --- TIMELINE (video + music), pinch to zoom, scrolls when zoomed ---
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp)
+                .pointerInput(Unit) {
+                    // Two-finger pinch changes the zoom. One finger is left to the tracks (seek / move / trim).
+                    awaitEachGesture {
+                        awaitFirstDown(pass = PointerEventPass.Initial)
+                        var lastDistance = 0f
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.size >= 2) {
+                                val distance = (pressed[0].position - pressed[1].position).getDistance()
+                                if (lastDistance > 0f && distance > 0f) {
+                                    val factor = distance / lastDistance
+                                    zoom = (zoom * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                }
+                                lastDistance = distance
+                                event.changes.forEach { it.consume() }
+                            } else {
+                                lastDistance = 0f
+                            }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
         ) {
             val contentWidth = maxWidth * zoom
             Column(modifier = Modifier.horizontalScroll(timelineScroll)) {
