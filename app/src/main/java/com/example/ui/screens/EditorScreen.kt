@@ -41,7 +41,6 @@ import com.example.ui.media.ProjectState
 import com.example.ui.media.ProjectStore
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
-import com.example.ui.media.VideoAudio
 import com.example.ui.viewmodel.VideoEditorViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -66,34 +65,31 @@ fun EditorScreen(
     val canUndo by TimelineModel.canUndo.collectAsState()
     val canRedo by TimelineModel.canRedo.collectAsState()
     val music by TimelineModel.music.collectAsState()
-    val videoVolume by VideoAudio.volume.collectAsState()
 
     val currentProj = project ?: return
 
     val exporter = remember { TimelineExporter(context) }
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableIntStateOf(0) }
+    var extracting by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
     val timelineScroll = rememberScrollState()
 
-    // Load the saved project once (if the app was restarted)
+    // Open the current project once (if the timeline is empty, e.g. after a restart)
     LaunchedEffect(Unit) {
         if (TimelineModel.sources.value.isEmpty()) {
-            val saved = withContext(Dispatchers.IO) { ProjectStore.load(context) }
-            if (saved != null) {
-                TimelineModel.restore(saved.sources, saved.segments, saved.music)
-                VideoAudio.setVolume(saved.videoVolume)
-            }
+            val saved = withContext(Dispatchers.IO) { ProjectStore.loadCurrent(context) }
+            if (saved != null) TimelineModel.restore(saved.sources, saved.segments, saved.music)
         }
         loaded = true
     }
 
     // Auto-save shortly after every change
-    LaunchedEffect(sources, segments, music, videoVolume, loaded) {
+    LaunchedEffect(sources, segments, music, loaded) {
         if (loaded) {
             delay(500L)
-            val state = ProjectState(sources, segments, music, videoVolume)
+            val state = ProjectState(ProjectStore.currentName, sources, segments, music)
             withContext(Dispatchers.IO) { ProjectStore.save(context, state) }
         }
     }
@@ -107,10 +103,10 @@ fun EditorScreen(
                 ProjectStore.save(
                     context,
                     ProjectState(
+                        ProjectStore.currentName,
                         TimelineModel.sources.value,
                         TimelineModel.segments.value,
-                        TimelineModel.music.value,
-                        VideoAudio.volume.value
+                        TimelineModel.music.value
                     )
                 )
             }
@@ -125,7 +121,7 @@ fun EditorScreen(
         }
     }
 
-    // Multiple video import: each file is copied into app storage first
+    // Multiple video import: each file is copied into the project folder first
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
@@ -145,7 +141,7 @@ fun EditorScreen(
         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
 
-    // Background music (audio file), also copied into app storage
+    // Background music (audio file), also copied into the project folder
     val musicPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -177,8 +173,7 @@ fun EditorScreen(
                     aspectRatio = currentProj.aspectRatio.ratio,
                     rotationDeg = currentProj.rotationAngle.toFloat(),
                     flipH = currentProj.isFlippedH,
-                    flipV = currentProj.isFlippedV,
-                    videoVolume = videoVolume
+                    flipV = currentProj.isFlippedV
                 ),
                 onDone = { location ->
                     exporting = false
@@ -192,11 +187,34 @@ fun EditorScreen(
         }
     }
 
+    val extractAudio: () -> Unit = {
+        val seg = segments.getOrNull(selected)
+        if (seg != null && !extracting) {
+            extracting = true
+            exporter.extractAudio(
+                sources = sources,
+                seg = seg,
+                onDone = { uri, duration ->
+                    extracting = false
+                    TimelineModel.setMusic(uri, duration)
+                    TimelineModel.setActiveTrack(ActiveTrack.MUSIC)
+                    Toast.makeText(context, "Audio extracted to the music track", Toast.LENGTH_SHORT).show()
+                },
+                onError = { message ->
+                    extracting = false
+                    Toast.makeText(context, "Extract failed: $message", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+    }
+
     val total = segments.sumOf { it.durationMs }
     val hasSelection = selected >= 0
     val hasVideo = segments.isNotEmpty()
     val musicTrack = music
     val musicMode = activeTrack == ActiveTrack.MUSIC && musicTrack != null
+    val videoTools = activeTrack == ActiveTrack.VIDEO
+    val selectedClip = segments.getOrNull(selected)
     val scrollFrac = if (timelineScroll.maxValue > 0) {
         timelineScroll.value.toFloat() / timelineScroll.maxValue.toFloat()
     } else {
@@ -344,11 +362,7 @@ fun EditorScreen(
             IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(1f) }) {
                 Icon(Icons.Default.Remove, contentDescription = "Zoom out", tint = Color.White)
             }
-            Text(
-                text = "${"%.1f".format(zoom)}x",
-                fontSize = 11.sp,
-                color = Color.White
-            )
+            Text(text = "${"%.1f".format(zoom)}x", fontSize = 11.sp, color = Color.White)
             IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(6f) }) {
                 Icon(Icons.Default.Add, contentDescription = "Zoom in", tint = Color.White)
             }
@@ -399,21 +413,8 @@ fun EditorScreen(
             }
         }
 
-        // --- MUSIC CONTROLS ---
-        if (musicTrack == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
-                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Music", fontSize = 12.sp)
-                }
-            }
-        } else {
+        // --- SOUND CONTROLS: the selected clip, or the music ---
+        if (musicMode && musicTrack != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -432,38 +433,51 @@ fun EditorScreen(
                 )
                 Text("${(musicTrack.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
             }
+        } else if (selectedClip != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = {
+                    TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
+                }) {
+                    Icon(
+                        imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        contentDescription = "Clip sound",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Text("Clip sound", fontSize = 11.sp, color = Color.White)
+                Slider(
+                    value = selectedClip.volume,
+                    onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFFFF5238),
+                        activeTrackColor = Color(0xFFFF5238)
+                    ),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+            }
         }
 
-        // --- VIDEO SOUND ---
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = { VideoAudio.toggleMute() },
-                enabled = hasVideo
+        // Add music when there is none
+        if (musicTrack == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = if (videoVolume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                    contentDescription = "Video sound",
-                    tint = if (hasVideo) Color.White else Color(0xFF4A4A58),
-                    modifier = Modifier.size(20.dp)
-                )
+                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
+                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add Music", fontSize = 12.sp)
+                }
             }
-            Text(text = "Video sound", fontSize = 11.sp, color = Color.White)
-            Slider(
-                value = videoVolume,
-                onValueChange = { VideoAudio.setVolume(it) },
-                enabled = hasVideo,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color(0xFFFF5238),
-                    activeTrackColor = Color(0xFFFF5238)
-                ),
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-            )
-            Text(text = "${(videoVolume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -491,7 +505,6 @@ fun EditorScreen(
                 }
             }
         } else {
-            val videoTools = activeTrack == ActiveTrack.VIDEO
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -532,6 +545,11 @@ fun EditorScreen(
                 item {
                     ToolButton("Delete", Icons.Default.Delete, enabled = hasSelection && videoTools) {
                         TimelineModel.deleteSelected()
+                    }
+                }
+                item {
+                    ToolButton("Extract audio", Icons.Default.MusicNote, enabled = hasSelection && videoTools && !extracting) {
+                        extractAudio()
                     }
                 }
                 item {
