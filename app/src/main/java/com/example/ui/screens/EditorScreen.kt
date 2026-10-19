@@ -28,8 +28,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.components.MusicTrackView
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
+import com.example.ui.media.ExportOptions
 import com.example.ui.media.MediaProbe
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
@@ -121,6 +123,13 @@ fun EditorScreen(
                 sources = sources,
                 segments = segments,
                 music = music,
+                options = ExportOptions(
+                    aspectRatio = currentProj.aspectRatio.ratio,
+                    rotationDeg = currentProj.rotationAngle.toFloat(),
+                    flipH = currentProj.isFlippedH,
+                    flipV = currentProj.isFlippedV,
+                    videoVolume = videoVolume
+                ),
                 onDone = { location ->
                     exporting = false
                     Toast.makeText(context, "Saved: $location", Toast.LENGTH_LONG).show()
@@ -264,7 +273,7 @@ fun EditorScreen(
             )
         }
 
-        // --- VIDEO TIMELINE ---
+        // --- VIDEO TRACK ---
         TimelineView(
             segments = segments,
             selectedIndex = selected,
@@ -277,7 +286,66 @@ fun EditorScreen(
             modifier = Modifier.padding(horizontal = 14.dp)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // --- MUSIC TRACK ---
+        val musicTrack = music
+        if (musicTrack == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
+                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add Music", fontSize = 12.sp)
+                }
+            }
+        } else {
+            MusicTrackView(
+                music = musicTrack,
+                totalMs = total,
+                onMoveBy = { delta -> TimelineModel.moveMusicBy(delta) },
+                modifier = Modifier.padding(horizontal = 14.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TextButton(onClick = { TimelineModel.trimMusicStartToPlayhead() }) {
+                    Text("Trim music start", fontSize = 11.sp, color = Color(0xFFFF5238))
+                }
+                TextButton(onClick = { TimelineModel.trimMusicEndToPlayhead() }) {
+                    Text("Trim music end", fontSize = 11.sp, color = Color(0xFFFF5238))
+                }
+                IconButton(onClick = { TimelineModel.removeMusic() }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove Music", tint = Color(0xFFA0A0B2))
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Music", fontSize = 11.sp, color = Color.White)
+                Slider(
+                    value = musicTrack.volume,
+                    onValueChange = { TimelineModel.setMusicVolume(it) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFFFF5238),
+                        activeTrackColor = Color(0xFFFF5238)
+                    ),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text("${(musicTrack.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+            }
+        }
 
         // --- VIDEO SOUND ---
         Row(
@@ -319,44 +387,7 @@ fun EditorScreen(
             )
         }
 
-        // --- MUSIC TRACK ---
-        val musicTrack = music
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (musicTrack == null) {
-                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
-                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Music", fontSize = 12.sp)
-                }
-            } else {
-                Icon(Icons.Default.MusicNote, null, tint = Color(0xFFFF5238), modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Music ${formatMs(musicTrack.durationMs)}",
-                    fontSize = 11.sp,
-                    color = Color.White
-                )
-                Slider(
-                    value = musicTrack.volume,
-                    onValueChange = { TimelineModel.setMusicVolume(it) },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFFFF5238),
-                        activeTrackColor = Color(0xFFFF5238)
-                    ),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                )
-                IconButton(onClick = { TimelineModel.removeMusic() }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove Music", tint = Color(0xFFA0A0B2))
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // --- EDIT TOOLS ---
         LazyRow(
@@ -417,7 +448,7 @@ fun EditorScreen(
             title = { Text("Exporting video", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Rendering clips and music...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
+                    Text("Rendering video, music and sound...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
                         progress = { exportProgress / 100f },
