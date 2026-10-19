@@ -33,6 +33,7 @@ import com.example.ui.components.VideoPreview
 import com.example.ui.media.MediaProbe
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
+import com.example.ui.media.VideoAudio
 import com.example.ui.viewmodel.VideoEditorViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -56,6 +57,7 @@ fun EditorScreen(
     val canUndo by TimelineModel.canUndo.collectAsState()
     val canRedo by TimelineModel.canRedo.collectAsState()
     val music by TimelineModel.music.collectAsState()
+    val videoVolume by VideoAudio.volume.collectAsState()
 
     val currentProj = project ?: return
 
@@ -276,6 +278,46 @@ fun EditorScreen(
         )
 
         Spacer(modifier = Modifier.height(8.dp))
+
+        // --- VIDEO SOUND ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = { VideoAudio.toggleMute() },
+                enabled = hasVideo
+            ) {
+                Icon(
+                    imageVector = if (videoVolume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                    contentDescription = "Video sound",
+                    tint = if (hasVideo) Color.White else Color(0xFF4A4A58),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Text(
+                text = "Video sound",
+                fontSize = 11.sp,
+                color = Color.White
+            )
+            Slider(
+                value = videoVolume,
+                onValueChange = { VideoAudio.setVolume(it) },
+                enabled = hasVideo,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFFF5238),
+                    activeTrackColor = Color(0xFFFF5238)
+                ),
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+            )
+            Text(
+                text = "${(videoVolume * 100).toInt()}%",
+                fontSize = 11.sp,
+                color = Color(0xFFA0A0B2)
+            )
+        }
 
         // --- MUSIC TRACK ---
         val musicTrack = music
