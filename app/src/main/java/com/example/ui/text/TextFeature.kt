@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -26,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.platform.Font
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -179,7 +181,7 @@ fun TextOverlayLayer(texts: List<TextClip>, playheadMs: Long, modifier: Modifier
 }
 
 @Composable
-private fun TextOverlayItem(t: TextClip, w: androidx.compose.ui.unit.Dp, h: androidx.compose.ui.unit.Dp) {
+private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp) {
     val context = LocalContext.current
     val family = remember(t.fontId) { FontLibrary.family(context, t.fontId) }
     val bg = if (t.background) {
