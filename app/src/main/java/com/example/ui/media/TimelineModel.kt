@@ -1,27 +1,34 @@
 package com.example.ui.media
 
+import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** One piece of the imported source video, in source time (ms). */
-data class Segment(val startMs: Long, val endMs: Long) {
+/** A video file the user imported. */
+data class Source(val uri: Uri, val durationMs: Long)
+
+/** One piece of a source video, in source time (ms). [source] is the index into the sources list. */
+data class Segment(val source: Int, val startMs: Long, val endMs: Long) {
     val durationMs: Long get() = endMs - startMs
 }
 
 /** Asks the player to jump to a timeline position. The id makes repeated seeks to the same spot trigger again. */
 data class SeekRequest(val ms: Long, val id: Long)
 
+/** Background music. Plays from timeline start, loops if shorter than the video. */
+data class MusicTrack(val uri: Uri, val durationMs: Long, val volume: Float = 1f)
+
 /**
- * Timeline state for the imported video.
- * The timeline is a list of segments taken from the source video, played one after another.
- * All times in the public API are timeline time (ms) unless stated otherwise.
+ * Timeline state.
+ * The timeline is a list of segments (from one or more imported videos) played one after another.
+ * Times in the public API are timeline time (ms) unless stated otherwise.
  */
 object TimelineModel {
     private const val MIN_SEGMENT_MS = 300L
 
-    private val _sourceDurationMs = MutableStateFlow(0L)
-    val sourceDurationMs: StateFlow<Long> = _sourceDurationMs.asStateFlow()
+    private val _sources = MutableStateFlow<List<Source>>(emptyList())
+    val sources: StateFlow<List<Source>> = _sources.asStateFlow()
 
     private val _segments = MutableStateFlow<List<Segment>>(emptyList())
     val segments: StateFlow<List<Segment>> = _segments.asStateFlow()
@@ -44,6 +51,9 @@ object TimelineModel {
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
+    private val _music = MutableStateFlow<MusicTrack?>(null)
+    val music: StateFlow<MusicTrack?> = _music.asStateFlow()
+
     private val undoStack = ArrayList<List<Segment>>()
     private val redoStack = ArrayList<List<Segment>>()
     private var clipboard: List<Segment> = emptyList()
@@ -52,24 +62,19 @@ object TimelineModel {
     val totalDurationMs: Long
         get() = _segments.value.sumOf { it.durationMs }
 
-    /** Called once the source video is loaded and its duration is known. */
-    fun initForVideo(durationMs: Long) {
-        if (durationMs <= 0L || _sourceDurationMs.value == durationMs) return
-        _sourceDurationMs.value = durationMs
-        _segments.value = listOf(Segment(0L, durationMs))
-        undoStack.clear()
-        redoStack.clear()
-        clipboard = emptyList()
-        _selected.value = -1
-        _playheadMs.value = 0L
-        _isPlaying.value = false
-        updateFlags()
+    /** Adds an imported video to the end of the timeline. */
+    fun addSource(uri: Uri, durationMs: Long) {
+        if (durationMs <= 0L) return
+        val index = _sources.value.size
+        _sources.value = _sources.value + Source(uri, durationMs)
+        commit(_segments.value + Segment(index, 0L, durationMs))
     }
 
-    /** Called when the user imports a different video. */
-    fun resetAll() {
-        _sourceDurationMs.value = 0L
+    /** Clears everything (all videos, music, undo history). */
+    fun clearAll() {
+        _sources.value = emptyList()
         _segments.value = emptyList()
+        _music.value = null
         undoStack.clear()
         redoStack.clear()
         clipboard = emptyList()
@@ -79,7 +84,21 @@ object TimelineModel {
         updateFlags()
     }
 
-    /** Maps a timeline time to (segment index, position inside that source segment). */
+    fun setMusic(uri: Uri, durationMs: Long) {
+        if (durationMs <= 0L) return
+        _music.value = MusicTrack(uri, durationMs)
+    }
+
+    fun setMusicVolume(volume: Float) {
+        val m = _music.value ?: return
+        _music.value = m.copy(volume = volume.coerceIn(0f, 1f))
+    }
+
+    fun removeMusic() {
+        _music.value = null
+    }
+
+    /** Maps a timeline time to (segment index, position inside that segment). */
     fun locate(timeMs: Long): Pair<Int, Long> {
         val list = _segments.value
         if (list.isEmpty()) return Pair(0, 0L)
@@ -147,7 +166,7 @@ object TimelineModel {
         updateFlags()
     }
 
-    /** Returns a new list with the segment containing [timeMs] split in two (if long enough). */
+    /** Returns a new list with the segment containing [timeMs] split in two (if both parts are long enough). */
     private fun splitList(list: List<Segment>, timeMs: Long): List<Segment> {
         val out = ArrayList<Segment>()
         var acc = 0L
@@ -159,8 +178,8 @@ object TimelineModel {
                 s.durationMs - rel >= MIN_SEGMENT_MS
             if (canSplit) {
                 val cut = s.startMs + rel
-                out.add(Segment(s.startMs, cut))
-                out.add(Segment(cut, s.endMs))
+                out.add(Segment(s.source, s.startMs, cut))
+                out.add(Segment(s.source, cut, s.endMs))
             } else {
                 out.add(s)
             }
@@ -233,7 +252,7 @@ object TimelineModel {
         val rel = _playheadMs.value - start
         if (rel <= 0L || s.durationMs - rel < MIN_SEGMENT_MS) return
         val out = ArrayList<Segment>(list)
-        out[i] = Segment(s.startMs + rel, s.endMs)
+        out[i] = Segment(s.source, s.startMs + rel, s.endMs)
         commit(out)
     }
 
@@ -245,7 +264,7 @@ object TimelineModel {
         val rel = _playheadMs.value - start
         if (rel < MIN_SEGMENT_MS || rel >= s.durationMs) return
         val out = ArrayList<Segment>(list)
-        out[i] = Segment(s.startMs, s.startMs + rel)
+        out[i] = Segment(s.source, s.startMs, s.startMs + rel)
         commit(out)
     }
 }
