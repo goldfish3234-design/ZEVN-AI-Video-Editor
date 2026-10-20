@@ -3,6 +3,7 @@ package com.example.ui.media
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -30,6 +31,8 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
+import com.example.ui.sticker.StickerClip
+import com.example.ui.sticker.StickerTrack
 import com.example.ui.text.TextAnimMath
 import com.example.ui.text.TextClip
 import com.example.ui.text.TextPreviewMetrics
@@ -50,7 +53,7 @@ data class ExportOptions(
     val flipV: Boolean
 )
 
-/** A part of one video segment that has the same look for all its text overlays. */
+/** A part of one video segment that has the same look for all its overlays. */
 private data class VideoPiece(
     val seg: Segment,
     val srcStart: Long,
@@ -61,9 +64,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Clip speed, clip volume, text overlays (colour, outline, background, font, size, position, timing and
- * animation) are all burned into the video. Overlapping audio clips are placed in separate sequences,
- * so Media3 mixes them. Must be started from the main thread.
+ * Clip speed and volume, text overlays (colour, outline, background, font, size, position, timing and
+ * animation) and sticker/image overlays are all burned into the video. Overlapping audio clips are placed
+ * in separate sequences, so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -105,16 +108,25 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * Cuts every video segment wherever a text starts or ends, and wherever a text's animation changes,
-     * so that inside one piece every text overlay has a fixed look.
+     * Cuts every video segment wherever a text or sticker starts or ends, and wherever a text's animation
+     * changes, so that inside one piece every overlay has a fixed look.
      * Source positions are converted with each clip's speed.
      */
-    private fun buildPieces(segments: List<Segment>, texts: List<TextClip>, totalMs: Long): List<VideoPiece> {
+    private fun buildPieces(
+        segments: List<Segment>,
+        texts: List<TextClip>,
+        stickers: List<StickerClip>,
+        totalMs: Long
+    ): List<VideoPiece> {
         val raw = mutableListOf(0L, totalMs)
         for (t in texts) {
             raw.add(t.startMs)
             raw.add(t.startMs + t.durationMs)
             raw.addAll(TextAnimMath.breakpoints(t))
+        }
+        for (s in stickers) {
+            raw.add(s.startMs)
+            raw.add(s.startMs + s.durationMs)
         }
         val breaks = raw.filter { it in 0L..totalMs }.distinct().sorted()
 
@@ -206,12 +218,13 @@ class TimelineExporter(private val context: Context) {
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
         val totalMs = segments.sumOf { it.durationMs }
 
-        // ---- Video sequence: cut at text boundaries; each clip keeps its speed and sound level ----
+        // ---- Video sequence: cut at overlay boundaries; each clip keeps its speed and sound level ----
         val texts = TextTrack.texts.value
+        val stickers = StickerTrack.stickers.value
         val previewWidthDp = TextPreviewMetrics.widthDp
         val (frameW, frameH) = frameSize(sources, options.aspectRatio)
         val bitmapCache = HashMap<String, Bitmap>()
-        val videoItems = buildPieces(segments, texts, totalMs).map { p ->
+        val videoItems = buildPieces(segments, texts, stickers, totalMs).map { p ->
             val clipped = MediaItem.Builder()
                 .setUri(sources[p.seg.source].uri)
                 .setClippingConfiguration(
@@ -232,6 +245,11 @@ class TimelineExporter(private val context: Context) {
             for (t in texts) {
                 val st = TextAnimMath.stateAt(t, mid) ?: continue
                 val overlay = overlayFor(t, st, frameW, frameH, previewWidthDp, bitmapCache)
+                if (overlay != null) overlays.add(overlay)
+            }
+            for (s in stickers) {
+                if (mid < s.startMs || mid >= s.startMs + s.durationMs) continue
+                val overlay = stickerOverlay(s, frameW, frameH, bitmapCache)
                 if (overlay != null) overlays.add(overlay)
             }
             if (overlays.isNotEmpty()) {
@@ -347,6 +365,36 @@ class TimelineExporter(private val context: Context) {
             .setAlphaScale(st.alpha)
             .build()
         return BitmapOverlay.createStaticBitmapOverlay(sized, settings)
+    }
+
+    /**
+     * One sticker/image overlay. The picture is scaled to [StickerClip.sizeFrac] of the frame width and
+     * placed at the same position as in the preview (top-left corner at xFrac, yFrac).
+     */
+    @OptIn(UnstableApi::class)
+    private fun stickerOverlay(
+        s: StickerClip,
+        frameW: Float,
+        frameH: Float,
+        cache: HashMap<String, Bitmap>
+    ): BitmapOverlay? {
+        val key = "s${s.id}"
+        val bmp = cache[key] ?: loadSticker(s, frameW)?.also { cache[key] = it } ?: return null
+        val cx = s.xFrac + (bmp.width / frameW) / 2f
+        val cy = s.yFrac + (bmp.height / frameH) / 2f
+        val settings = OverlaySettings.Builder()
+            .setBackgroundFrameAnchor(cx * 2f - 1f, 1f - cy * 2f)
+            .build()
+        return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
+    }
+
+    /** Loads a sticker picture and scales it to the export size. Returns null if the file cannot be read. */
+    private fun loadSticker(s: StickerClip, frameW: Float): Bitmap? {
+        val path = Uri.parse(s.uri).path ?: return null
+        val decoded = BitmapFactory.decodeFile(path) ?: return null
+        val targetW = (frameW * s.sizeFrac).toInt().coerceAtLeast(1)
+        val targetH = (decoded.height.toFloat() * targetW / decoded.width.toFloat()).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
     }
 
     /**
