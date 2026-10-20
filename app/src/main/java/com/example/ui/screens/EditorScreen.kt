@@ -348,7 +348,7 @@ fun EditorScreen(
             }
         }
 
-        // --- PREVIEW ---
+        // --- PREVIEW: the frame keeps the chosen social media shape and fits on screen ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -356,54 +356,60 @@ fun EditorScreen(
                 .padding(horizontal = 14.dp, vertical = 4.dp),
             contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .aspectRatio(currentProj.aspectRatio.ratio, matchHeightConstraintsFirst = true)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Color.Black)
-                    .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() }
-            ) {
-                val mediaModifier = Modifier
-                    .fillMaxSize()
-                    .rotate(currentProj.rotationAngle.toFloat())
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val ratio = currentProj.aspectRatio.ratio
+                // the largest frame with this ratio that fits in the free space
+                val frameW = minOf(maxWidth, maxHeight * ratio)
+                val frameH = frameW / ratio
+                Box(
+                    modifier = Modifier
+                        .width(frameW)
+                        .height(frameH)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Color.Black)
+                        .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() }
+                ) {
+                    val mediaModifier = Modifier
+                        .fillMaxSize()
+                        .rotate(currentProj.rotationAngle.toFloat())
 
-                if (hasVideo) {
-                    VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
-                } else {
-                    Image(
-                        painter = painterResource(id = R.drawable.zevn_fashion_hero),
-                        contentDescription = "Preview placeholder",
-                        modifier = mediaModifier,
-                        contentScale = ContentScale.Crop
-                    )
-                    Button(
-                        onClick = launchVideoPicker,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 16.dp)
-                    ) {
-                        Icon(Icons.Default.VideoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Import Video", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (hasVideo) {
+                        VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
+                    } else {
+                        Image(
+                            painter = painterResource(id = R.drawable.zevn_fashion_hero),
+                            contentDescription = "Preview placeholder",
+                            modifier = mediaModifier,
+                            contentScale = ContentScale.Crop
+                        )
+                        Button(
+                            onClick = launchVideoPicker,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 16.dp)
+                        ) {
+                            Icon(Icons.Default.VideoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Import Video", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
-                }
 
-                // Stickers and text, drawn on top of the video. Drag them to move.
-                StickerLayer(
-                    stickers = stickers,
-                    playheadMs = playhead,
-                    selectedIndex = selectedSticker,
-                    modifier = Modifier.fillMaxSize()
-                )
-                DraggableTextLayer(
-                    texts = texts,
-                    playheadMs = playhead,
-                    selectedIndex = selectedText,
-                    modifier = Modifier.fillMaxSize()
-                )
+                    // Stickers and text, drawn on top of the video. Drag them to move.
+                    StickerLayer(
+                        stickers = stickers,
+                        playheadMs = playhead,
+                        selectedIndex = selectedSticker,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    DraggableTextLayer(
+                        texts = texts,
+                        playheadMs = playhead,
+                        selectedIndex = selectedText,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
 
