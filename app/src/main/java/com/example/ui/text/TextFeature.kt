@@ -28,8 +28,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -42,7 +40,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 private const val HANDLE_PX = 48f
 private const val MIN_TEXT_MS = 300L
@@ -69,58 +66,6 @@ data class TextClip(
     val bgColor: Long = 0xCC000000L,
     val anim: String = "none"
 )
-
-/** Built-in fonts plus fonts the user imported from the phone (stored in app storage). */
-object FontLibrary {
-    private val builtIn = listOf(
-        "default" to "Default",
-        "serif" to "Serif",
-        "sans" to "Sans",
-        "mono" to "Mono",
-        "cursive" to "Handwriting"
-    )
-
-    private fun fontDir(context: Context): File = File(context.filesDir, "fonts").apply { mkdirs() }
-
-    /** (id, label) for every font the user can pick. */
-    fun options(context: Context): List<Pair<String, String>> {
-        val imported = fontDir(context).listFiles().orEmpty()
-            .filter { it.isFile }
-            .sortedBy { it.name }
-            .map { "file:${it.name}" to it.nameWithoutExtension }
-        return builtIn + imported
-    }
-
-    fun family(context: Context, id: String): FontFamily = when {
-        id.startsWith("file:") -> {
-            val f = File(fontDir(context), id.removePrefix("file:"))
-            if (f.exists()) {
-                try {
-                    FontFamily(Font(f))
-                } catch (e: Exception) {
-                    FontFamily.Default
-                }
-            } else {
-                FontFamily.Default
-            }
-        }
-        id == "serif" -> FontFamily.Serif
-        id == "sans" -> FontFamily.SansSerif
-        id == "mono" -> FontFamily.Monospace
-        id == "cursive" -> FontFamily.Cursive
-        else -> FontFamily.Default
-    }
-
-    /** Copies a picked font file into app storage and returns its id. Call from a background thread. */
-    fun import(context: Context, uri: Uri): String {
-        val name = "font_${System.currentTimeMillis()}.ttf"
-        val dest = File(fontDir(context), name)
-        val input = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalStateException("Cannot read the font file")
-        input.use { src -> dest.outputStream().use { out -> src.copyTo(out) } }
-        return "file:$name"
-    }
-}
 
 /** The text track: the list of text overlays and which one is selected. */
 object TextTrack {
@@ -250,7 +195,7 @@ fun TextOverlayLayer(texts: List<TextClip>, playheadMs: Long, modifier: Modifier
 private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
     val context = LocalContext.current
     val density = LocalDensity.current
-    val family = remember(t.fontId) { FontLibrary.family(context, t.fontId) }
+    val family = remember(t.fontId, t.id) { FontLibrary.family(context, t.fontId) }
 
     // Same animation math as the export
     val state = TextAnimMath.stateAt(t, playheadMs) ?: return
@@ -431,8 +376,9 @@ private fun ChannelSlider(label: String, value: Int, tint: Color, onValue: (Int)
 
 /**
  * Dialog to add or edit a text overlay:
- * text, font, size, colours (text / outline / background, with a colour plate), outline width,
- * style, position, duration and animation. Also "Cut at playhead" to split the text.
+ * text (Bengali or English), font (with import, rename and delete of your own fonts), size,
+ * colours (text / outline / background, with a colour plate), outline width, style, position,
+ * duration and animation. Also "Cut at playhead" to split the text.
  */
 @Composable
 fun TextEditorDialog(
@@ -457,6 +403,10 @@ fun TextEditorDialog(
     var yFrac by remember { mutableStateOf(initial?.yFrac ?: 0.8f) }
     var anim by remember { mutableStateOf(initial?.anim ?: "none") }
     var fonts by remember { mutableStateOf(FontLibrary.options(context)) }
+    var manageFonts by remember { mutableStateOf(false) }
+    var renameId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var fontError by remember { mutableStateOf<String?>(null) }
     // Which colour the plate edits: 0 = text, 1 = outline, 2 = background
     var colorTarget by remember { mutableStateOf(0) }
 
@@ -469,8 +419,9 @@ fun TextEditorDialog(
                     val id = withContext(Dispatchers.IO) { FontLibrary.import(context, uri) }
                     fonts = FontLibrary.options(context)
                     fontId = id
+                    fontError = null
                 } catch (e: Exception) {
-                    // ignore: the file could not be read
+                    fontError = e.message ?: "Font could not be imported"
                 }
             }
         }
@@ -485,7 +436,7 @@ fun TextEditorDialog(
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
-                    label = { Text("Text") },
+                    label = { Text("Text (বাংলা / English)") },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -502,12 +453,69 @@ fun TextEditorDialog(
                     }
                 }
                 Spacer(modifier = Modifier.height(6.dp))
-                OutlinedButton(onClick = {
-                    importFont.launch(
-                        arrayOf("font/*", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream")
-                    )
-                }) {
-                    Text("Import font from phone", fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        importFont.launch(
+                            arrayOf("font/*", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream")
+                        )
+                    }) {
+                        Text("Import font", fontSize = 12.sp)
+                    }
+                    OutlinedButton(onClick = { manageFonts = !manageFonts }) {
+                        Text(if (manageFonts) "Done" else "Edit fonts", fontSize = 12.sp)
+                    }
+                }
+                fontError?.let {
+                    Text(it, color = Color(0xFFFF5252), fontSize = 11.sp)
+                }
+
+                if (manageFonts) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    val imported = fonts.filter { it.first.startsWith("file:") }
+                    if (imported.isEmpty()) {
+                        Text("No imported fonts yet. Import a .ttf or .otf file (Bengali fonts work too).", color = Color(0xFFA0A0B2), fontSize = 11.sp)
+                    }
+                    imported.forEach { (id, label) ->
+                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                            if (renameId == id) {
+                                OutlinedTextField(
+                                    value = renameText,
+                                    onValueChange = { renameText = it },
+                                    singleLine = true,
+                                    label = { Text("New name") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedBorderColor = Color(0xFFFF5238)
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = {
+                                        FontLibrary.rename(context, id, renameText)
+                                        fonts = FontLibrary.options(context)
+                                        renameId = null
+                                    }) { Text("Save name", color = Color(0xFFFF5238)) }
+                                    TextButton(onClick = { renameId = null }) {
+                                        Text("Cancel", color = Color(0xFFA0A0B2))
+                                    }
+                                }
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(label, color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = {
+                                        renameId = id
+                                        renameText = label
+                                    }) { Text("Rename", color = Color(0xFFFF5238), fontSize = 12.sp) }
+                                    TextButton(onClick = {
+                                        FontLibrary.delete(context, id)
+                                        fonts = FontLibrary.options(context)
+                                        if (fontId == id) fontId = "default"
+                                    }) { Text("Delete", color = Color(0xFFFF5252), fontSize = 12.sp) }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
