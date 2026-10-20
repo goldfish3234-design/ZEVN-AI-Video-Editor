@@ -46,8 +46,12 @@ import com.example.ui.media.ProjectState
 import com.example.ui.media.ProjectStore
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
+import com.example.ui.sticker.StickerLayer
+import com.example.ui.sticker.StickerStore
+import com.example.ui.sticker.StickerTrack
+import com.example.ui.sticker.StickerTrackBar
+import com.example.ui.text.DraggableTextLayer
 import com.example.ui.text.TextEditorDialog
-import com.example.ui.text.TextOverlayLayer
 import com.example.ui.text.TextTrack
 import com.example.ui.text.TextTrackBar
 import com.example.ui.text.textTrimEndToPlayhead
@@ -61,10 +65,12 @@ import kotlin.math.abs
 
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 6f
+private const val STICKER_MS = 3000L
 
 private val ActiveBorder = Color(0xFFFF5238)
 private val InactiveBorder = Color(0xFF2A2A38)
 private val TextBorder = Color(0xFFFFB800)
+private val StickerBorder = Color(0xFF7CE38B)
 
 @Composable
 fun EditorScreen(
@@ -87,6 +93,8 @@ fun EditorScreen(
     val selectedAudio by TimelineModel.selectedAudio.collectAsState()
     val texts by TextTrack.texts.collectAsState()
     val selectedText by TextTrack.selectedText.collectAsState()
+    val stickers by StickerTrack.stickers.collectAsState()
+    val selectedSticker by StickerTrack.selectedSticker.collectAsState()
 
     val currentProj = project ?: return
 
@@ -100,26 +108,41 @@ fun EditorScreen(
     var showVolumeBar by rememberSaveable { mutableStateOf(false) }
     // The speed choices only appear after the Speed tool is pressed
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
+    // The sticker size bar only appears after the Size tool is pressed
+    var showStickerSize by rememberSaveable { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
     val timelineScroll = rememberScrollState()
 
-    // Open the current project once: timeline (if empty) and text overlays
+    // Only one of text / sticker is selected at a time
+    LaunchedEffect(selectedText) {
+        if (selectedText >= 0) StickerTrack.select(-1)
+    }
+    LaunchedEffect(selectedSticker) {
+        if (selectedSticker >= 0) TextTrack.select(-1)
+    }
+
+    // Open the current project once: timeline (if empty), text overlays and stickers
     LaunchedEffect(Unit) {
         val saved = withContext(Dispatchers.IO) { ProjectStore.loadCurrent(context) }
         if (TimelineModel.sources.value.isEmpty() && saved != null) {
             TimelineModel.restore(saved.sources, saved.segments, saved.music)
         }
         if (saved != null) TextTrack.restore(saved.texts)
+        val savedStickers = withContext(Dispatchers.IO) { StickerStore.load(context) }
+        StickerTrack.restore(savedStickers)
         loaded = true
     }
 
     // Auto-save shortly after every change
-    LaunchedEffect(sources, segments, audioClips, texts, loaded) {
+    LaunchedEffect(sources, segments, audioClips, texts, stickers, loaded) {
         if (loaded) {
             delay(500L)
             val state = ProjectState(ProjectStore.currentName, sources, segments, audioClips, texts)
-            withContext(Dispatchers.IO) { ProjectStore.save(context, state) }
+            withContext(Dispatchers.IO) {
+                ProjectStore.save(context, state)
+                StickerStore.save(context, stickers)
+            }
         }
     }
 
@@ -139,6 +162,7 @@ fun EditorScreen(
                         TextTrack.texts.value
                     )
                 )
+                StickerStore.save(context, StickerTrack.stickers.value)
             }
         }
     }
@@ -189,6 +213,25 @@ fun EditorScreen(
     }
     val launchMusicPicker: () -> Unit = {
         musicPicker.launch(arrayOf("audio/*"))
+    }
+
+    // Image / sticker: copied into the project folder, then placed on the preview at the playhead
+    val stickerPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    val local = withContext(Dispatchers.IO) { ProjectStore.importCopy(context, uri, "sticker") }
+                    StickerTrack.add(local.toString(), TimelineModel.playheadMs.value, STICKER_MS)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Image import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+    val launchStickerPicker: () -> Unit = {
+        stickerPicker.launch(arrayOf("image/*"))
     }
 
     val startExport: () -> Unit = {
@@ -245,9 +288,11 @@ fun EditorScreen(
     val hasVideo = segments.isNotEmpty()
     val audioSel = audioClips.getOrNull(selectedAudio)
     val textSel = texts.getOrNull(selectedText)
+    val stickerSel = stickers.getOrNull(selectedSticker)
     val textMode = textSel != null
-    val audioMode = !textMode && activeTrack == ActiveTrack.MUSIC && audioSel != null
-    val videoTools = !textMode && activeTrack == ActiveTrack.VIDEO
+    val stickerMode = !textMode && stickerSel != null
+    val audioMode = !textMode && !stickerMode && activeTrack == ActiveTrack.MUSIC && audioSel != null
+    val videoTools = !textMode && !stickerMode && activeTrack == ActiveTrack.VIDEO
     val selectedClip = segments.getOrNull(selected)
     val scrollFrac = if (timelineScroll.maxValue > 0) {
         timelineScroll.value.toFloat() / timelineScroll.maxValue.toFloat()
@@ -346,10 +391,17 @@ fun EditorScreen(
                     }
                 }
 
-                // Text overlays drawn on top of the video
-                TextOverlayLayer(
+                // Stickers and text, drawn on top of the video. Drag them to move.
+                StickerLayer(
+                    stickers = stickers,
+                    playheadMs = playhead,
+                    selectedIndex = selectedSticker,
+                    modifier = Modifier.fillMaxSize()
+                )
+                DraggableTextLayer(
                     texts = texts,
                     playheadMs = playhead,
+                    selectedIndex = selectedText,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -385,6 +437,7 @@ fun EditorScreen(
             Text(
                 text = when {
                     textMode -> "Text ${selectedText + 1}"
+                    stickerMode -> "Sticker ${selectedSticker + 1}"
                     audioMode -> "Audio ${selectedAudio + 1}"
                     hasSelection && selectedClip != null && abs(selectedClip.speed - 1f) > 0.01f ->
                         "Clip ${selected + 1} · ${formatSpeed(selectedClip.speed)}"
@@ -422,7 +475,7 @@ fun EditorScreen(
             )
         }
 
-        // --- TIMELINE (video + audio + text), pinch to zoom, scrolls when zoomed ---
+        // --- TIMELINE (video + audio + text + stickers), pinch to zoom, scrolls when zoomed ---
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
@@ -463,6 +516,7 @@ fun EditorScreen(
                         totalMs = total,
                         onTimeChosen = { t ->
                             TextTrack.select(-1)
+                            StickerTrack.select(-1)
                             TimelineModel.requestSeek(t)
                             TimelineModel.selectAtTime(t)
                         },
@@ -482,6 +536,7 @@ fun EditorScreen(
                             selectedIndex = selectedAudio,
                             onSelect = { i ->
                                 TextTrack.select(-1)
+                                StickerTrack.select(-1)
                                 TimelineModel.selectAudio(i)
                             },
                             onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
@@ -512,6 +567,22 @@ fun EditorScreen(
                                 )
                         )
                     }
+                    if (stickers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        StickerTrackBar(
+                            stickers = stickers,
+                            totalMs = total,
+                            selectedIndex = selectedSticker,
+                            onSelect = { i -> StickerTrack.select(i) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(
+                                    width = 2.dp,
+                                    color = if (stickerMode) StickerBorder else InactiveBorder,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        )
+                    }
                 }
 
                 // One playhead line across ALL tracks, with a handle on top
@@ -531,6 +602,29 @@ fun EditorScreen(
                             .background(Color.White)
                     )
                 }
+            }
+        }
+
+        // --- STICKER SIZE (only after the Size tool is pressed) ---
+        if (showStickerSize && stickerMode && stickerSel != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Sticker size", fontSize = 11.sp, color = Color.White)
+                Slider(
+                    value = stickerSel.sizeFrac,
+                    onValueChange = { StickerTrack.setSize(selectedSticker, it) },
+                    valueRange = 0.05f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF7CE38B),
+                        activeTrackColor = Color(0xFF7CE38B)
+                    ),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
             }
         }
 
@@ -623,7 +717,7 @@ fun EditorScreen(
             }
         }
 
-        // Add audio and text
+        // Add audio, text and image/sticker
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -634,7 +728,7 @@ fun EditorScreen(
             OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
                 Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Add Audio", fontSize = 12.sp)
+                Text("Audio", fontSize = 12.sp)
             }
             OutlinedButton(onClick = {
                 textEditIndex = -1
@@ -642,7 +736,12 @@ fun EditorScreen(
             }, enabled = hasVideo) {
                 Icon(Icons.Default.TextFields, null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Add Text", fontSize = 12.sp)
+                Text("Text", fontSize = 12.sp)
+            }
+            OutlinedButton(onClick = launchStickerPicker, enabled = hasVideo) {
+                Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Sticker", fontSize = 12.sp)
             }
         }
 
@@ -691,6 +790,41 @@ fun EditorScreen(
                 item {
                     ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
                         TextTrack.select(-1)
+                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                    }
+                }
+            }
+        } else if (stickerMode) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    ToolButton("Size", Icons.Default.Straighten, enabled = true) {
+                        showStickerSize = !showStickerSize
+                    }
+                }
+                item {
+                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                        StickerTrack.trimStartToPlayhead(selectedSticker, playhead)
+                    }
+                }
+                item {
+                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                        StickerTrack.trimEndToPlayhead(selectedSticker, playhead)
+                    }
+                }
+                item {
+                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                        StickerTrack.delete(selectedSticker)
+                    }
+                }
+                item {
+                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
+                        StickerTrack.select(-1)
                         TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
                     }
                 }
@@ -842,7 +976,7 @@ fun EditorScreen(
             title = { Text("Exporting video", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Rendering video, audio and sound...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
+                    Text("Rendering video, audio, text and stickers...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
                         progress = { exportProgress / 100f },
