@@ -132,6 +132,7 @@ object ProjectStore {
                     .put("startMs", s.startMs)
                     .put("endMs", s.endMs)
                     .put("volume", s.volume.toDouble())
+                    .put("speed", s.speed.toDouble())
             )
         }
         root.put("segments", segments)
@@ -251,7 +252,8 @@ object ProjectStore {
                         source = o.getInt("source"),
                         startMs = o.getLong("startMs"),
                         endMs = o.getLong("endMs"),
-                        volume = o.optDouble("volume", 1.0).toFloat()
+                        volume = o.optDouble("volume", 1.0).toFloat(),
+                        speed = o.optDouble("speed", 1.0).toFloat()
                     )
                 )
             }
