@@ -165,6 +165,10 @@ object ProjectStore {
                     .put("background", t.background)
                     .put("xFrac", t.xFrac.toDouble())
                     .put("yFrac", t.yFrac.toDouble())
+                    .put("outlineColor", t.outlineColor)
+                    .put("outlineWidth", t.outlineWidth.toDouble())
+                    .put("bgColor", t.bgColor)
+                    .put("anim", t.anim)
             )
         }
         root.put("texts", texts)
@@ -218,7 +222,11 @@ object ProjectStore {
         bold = o.optBoolean("bold", true),
         background = o.optBoolean("background", false),
         xFrac = o.optDouble("xFrac", 0.08).toFloat(),
-        yFrac = o.optDouble("yFrac", 0.8).toFloat()
+        yFrac = o.optDouble("yFrac", 0.8).toFloat(),
+        outlineColor = o.optLong("outlineColor", 0xFF000000L),
+        outlineWidth = o.optDouble("outlineWidth", 0.0).toFloat(),
+        bgColor = o.optLong("bgColor", 0xCC000000L),
+        anim = o.optString("anim", "none")
     )
 
     private fun read(context: Context, id: String): ProjectState? {
