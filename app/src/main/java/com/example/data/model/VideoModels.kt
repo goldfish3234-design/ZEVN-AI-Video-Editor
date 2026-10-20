@@ -21,11 +21,17 @@ data class VideoProject(
     val status: String = "Draft"
 )
 
+/**
+ * Frame shapes for social media. [ratio] is width divided by height.
+ * The preview and the export both use this value.
+ */
 enum class AspectRatioType(val label: String, val ratio: Float, val iconName: String) {
-    RATIO_9_16("9:16 TikTok / Reels", 9f / 16f, "TikTok"),
-    RATIO_16_9("16:9 YouTube", 16f / 9f, "YouTube"),
-    RATIO_1_1("1:1 Instagram", 1f, "Instagram"),
-    RATIO_4_5("4:5 Feed", 4f / 5f, "Feed")
+    RATIO_9_16("9:16 TikTok / Reels / Shorts", 9f / 16f, "TikTok"),
+    RATIO_16_9("16:9 YouTube / Landscape", 16f / 9f, "YouTube"),
+    RATIO_1_1("1:1 Instagram Square", 1f, "Instagram"),
+    RATIO_4_5("4:5 Instagram / Facebook Feed", 4f / 5f, "Feed"),
+    RATIO_3_4("3:4 Pinterest / Portrait", 3f / 4f, "Portrait"),
+    RATIO_4_3("4:3 Classic / Landscape", 4f / 3f, "Classic")
 }
 
 data class VideoClip(
