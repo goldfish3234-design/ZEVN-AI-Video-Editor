@@ -3,6 +3,7 @@ package com.example.ui.media
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -130,6 +131,42 @@ class TimelineExporter(private val context: Context) {
         return pieces
     }
 
+    /**
+     * The size of the exported frame, worked out from the first clip's real resolution and the
+     * chosen aspect ratio (the same crop the export uses). Text is drawn at this size, so it matches the preview.
+     */
+    private fun frameSize(sources: List<Source>, aspectRatio: Float): Pair<Float, Float> {
+        var srcW = 1080f
+        var srcH = 1920f
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, sources.first().uri)
+            val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toFloatOrNull()
+            val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toFloatOrNull()
+            val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            if (w != null && h != null && w > 0f && h > 0f) {
+                if (rot == 90 || rot == 270) {
+                    srcW = h
+                    srcH = w
+                } else {
+                    srcW = w
+                    srcH = h
+                }
+            }
+        } catch (e: Exception) {
+            // keep the default size
+        } finally {
+            retriever.release()
+        }
+        return if (aspectRatio < 1f) {
+            val frameH = min(srcH, srcW / aspectRatio)
+            Pair(frameH * aspectRatio, frameH)
+        } else {
+            val frameW = min(srcW, srcH * aspectRatio)
+            Pair(frameW, frameW / aspectRatio)
+        }
+    }
+
     /** [onDone] gets a human-readable location of the saved file. */
     @OptIn(UnstableApi::class)
     fun export(
@@ -153,6 +190,7 @@ class TimelineExporter(private val context: Context) {
         // ---- Video sequence: cut at text boundaries, each clip keeps its own sound level ----
         val texts = TextTrack.texts.value
         val previewWidthDp = TextPreviewMetrics.widthDp
+        val (frameW, frameH) = frameSize(sources, options.aspectRatio)
         val videoEffects = buildVideoEffects(options)
         val bitmapCache = HashMap<String, Bitmap>()
         val videoItems = buildPieces(segments, texts, totalMs).map { p ->
@@ -172,7 +210,7 @@ class TimelineExporter(private val context: Context) {
             val overlays = mutableListOf<TextureOverlay>()
             for (t in texts) {
                 val st = TextAnimMath.stateAt(t, mid) ?: continue
-                val overlay = overlayFor(t, st, options.aspectRatio, previewWidthDp, bitmapCache)
+                val overlay = overlayFor(t, st, frameW, frameH, previewWidthDp, bitmapCache)
                 if (overlay != null) overlays.add(overlay)
             }
             if (overlays.isNotEmpty()) {
@@ -253,21 +291,21 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * One text overlay at one moment: its look ([st]) placed where it appears in the preview.
-     * The export frame is 1080 px wide. [previewWidthDp] is the preview width the text was designed for,
-     * so the text keeps the same size relative to the frame. Returns null when the text is invisible.
+     * One text overlay at one moment, placed where it appears in the preview.
+     * [frameW] x [frameH] is the exported frame in pixels. The preview width [previewWidthDp] is
+     * mapped onto the frame width, so sizes are the same in the preview and in the export.
+     * Returns null when the text is invisible.
      */
     @OptIn(UnstableApi::class)
     private fun overlayFor(
         t: TextClip,
         st: TextAnimMath.State,
-        aspectRatio: Float,
+        frameW: Float,
+        frameH: Float,
         previewWidthDp: Float,
         cache: HashMap<String, Bitmap>
     ): BitmapOverlay? {
         if (st.alpha < 0.01f) return null
-        val frameW = 1080f
-        val frameH = frameW / aspectRatio
         val pxPerDp = frameW / (if (previewWidthDp > 0f) previewWidthDp else 360f)
 
         val base = cache.getOrPut("${t.id}|100") { TextRenderer.render(context, t, pxPerDp) }
