@@ -46,7 +46,6 @@ import java.io.File
 
 private const val HANDLE_PX = 48f
 private const val MIN_TEXT_MS = 300L
-private const val ANIM_MS = 400f
 
 /**
  * One text overlay. Times are timeline ms. Position is a fraction of the preview (0..1).
@@ -237,6 +236,8 @@ fun TextOverlayLayer(texts: List<TextClip>, playheadMs: Long, modifier: Modifier
     BoxWithConstraints(modifier = modifier) {
         val w = maxWidth
         val h = maxHeight
+        // remember the preview width so the export can size the text the same way
+        TextPreviewMetrics.widthDp = w.value
         texts.forEach { t ->
             if (playheadMs >= t.startMs && playheadMs < t.startMs + t.durationMs) {
                 TextOverlayItem(t, w, h, playheadMs)
@@ -251,21 +252,8 @@ private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
     val density = LocalDensity.current
     val family = remember(t.fontId) { FontLibrary.family(context, t.fontId) }
 
-    // Enter / exit progress (0..1) for the animation
-    val local = (playheadMs - t.startMs).toFloat()
-    val inP = (local / ANIM_MS).coerceIn(0f, 1f)
-    val outP = ((t.durationMs - local) / ANIM_MS).coerceIn(0f, 1f)
-    val presence = minOf(inP, outP)
-    val dyDp = when (t.anim) {
-        "slide" -> (1f - inP) * 40f
-        "drop" -> -(1f - inP) * 60f
-        else -> 0f
-    }
-    val scale = when (t.anim) {
-        "pop" -> if (inP < 1f) 0.3f + 0.7f * inP else 1f
-        else -> 1f
-    }
-    val animAlpha = if (t.anim == "none") 1f else presence
+    // Same animation math as the export
+    val state = TextAnimMath.stateAt(t, playheadMs) ?: return
 
     val bg = if (t.background) {
         Modifier
@@ -279,11 +267,11 @@ private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
 
     Box(
         modifier = Modifier
-            .offset(x = w * t.xFrac, y = h * t.yFrac + dyDp.dp)
+            .offset(x = w * t.xFrac, y = h * t.yFrac + state.dyDp.dp)
             .graphicsLayer {
-                this.alpha = animAlpha
-                scaleX = scale
-                scaleY = scale
+                alpha = if (t.anim == "none") 1f else state.alpha
+                scaleX = state.scale
+                scaleY = state.scale
             }
             .then(bg)
     ) {
