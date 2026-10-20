@@ -26,13 +26,16 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
+import com.example.ui.text.TextAnimMath
 import com.example.ui.text.TextClip
+import com.example.ui.text.TextPreviewMetrics
 import com.example.ui.text.TextRenderer
 import com.example.ui.text.TextTrack
 import com.google.common.collect.ImmutableList
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.min
 
 /** Project settings that the export must apply to the video. */
@@ -43,7 +46,7 @@ data class ExportOptions(
     val flipV: Boolean
 )
 
-/** A part of one video segment that has the same set of visible texts. */
+/** A part of one video segment that has the same look for all its text overlays. */
 private data class VideoPiece(
     val seg: Segment,
     val srcStart: Long,
@@ -54,8 +57,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Text overlays from the text track are burned into the video. Overlapping audio clips are placed in
- * separate sequences, so Media3 mixes them together. Must be started from the main thread.
+ * Text overlays (colour, outline, background, font, size, position, timing and animation) are burned
+ * into the video. Overlapping audio clips are placed in separate sequences, so Media3 mixes them.
+ * Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -96,12 +100,19 @@ class TimelineExporter(private val context: Context) {
         return lanes
     }
 
-    /** Cuts every video segment wherever a text starts or ends, so each piece has a fixed set of texts. */
+    /**
+     * Cuts every video segment wherever a text starts or ends, and wherever a text's animation changes,
+     * so that inside one piece every text overlay has a fixed look.
+     */
     private fun buildPieces(segments: List<Segment>, texts: List<TextClip>, totalMs: Long): List<VideoPiece> {
-        val breaks = (listOf(0L, totalMs) + texts.flatMap { listOf(it.startMs, it.startMs + it.durationMs) })
-            .filter { it in 0L..totalMs }
-            .distinct()
-            .sorted()
+        val raw = mutableListOf(0L, totalMs)
+        for (t in texts) {
+            raw.add(t.startMs)
+            raw.add(t.startMs + t.durationMs)
+            raw.addAll(TextAnimMath.breakpoints(t))
+        }
+        val breaks = raw.filter { it in 0L..totalMs }.distinct().sorted()
+
         val pieces = mutableListOf<VideoPiece>()
         var tl0 = 0L
         for (seg in segments) {
@@ -141,8 +152,9 @@ class TimelineExporter(private val context: Context) {
 
         // ---- Video sequence: cut at text boundaries, each clip keeps its own sound level ----
         val texts = TextTrack.texts.value
+        val previewWidthDp = TextPreviewMetrics.widthDp
         val videoEffects = buildVideoEffects(options)
-        val bitmapCache = HashMap<Long, Bitmap>()
+        val bitmapCache = HashMap<String, Bitmap>()
         val videoItems = buildPieces(segments, texts, totalMs).map { p ->
             val clipped = MediaItem.Builder()
                 .setUri(sources[p.seg.source].uri)
@@ -154,13 +166,19 @@ class TimelineExporter(private val context: Context) {
                 )
                 .build()
             val mid = (p.tlStart + p.tlEnd) / 2
-            val active = texts.filter { mid >= it.startMs && mid < it.startMs + it.durationMs }
             val effects = mutableListOf<Effect>()
             effects.addAll(videoEffects)
-            if (active.isNotEmpty()) {
-                val overlays: List<TextureOverlay> = active.map { overlayFor(it, options.aspectRatio, bitmapCache) }
+
+            val overlays = mutableListOf<TextureOverlay>()
+            for (t in texts) {
+                val st = TextAnimMath.stateAt(t, mid) ?: continue
+                val overlay = overlayFor(t, st, options.aspectRatio, previewWidthDp, bitmapCache)
+                if (overlay != null) overlays.add(overlay)
+            }
+            if (overlays.isNotEmpty()) {
                 effects.add(OverlayEffect(ImmutableList.copyOf(overlays)))
             }
+
             EditedMediaItem.Builder(clipped)
                 .setEffects(Effects(listOf(VolumeAudioProcessor(p.seg.volume)), effects))
                 .build()
@@ -235,26 +253,41 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * A text overlay placed where it appears in the preview.
-     * The export frame is 1080 px wide; the preview is taken as about 360 dp wide.
+     * One text overlay at one moment: its look ([st]) placed where it appears in the preview.
+     * The export frame is 1080 px wide. [previewWidthDp] is the preview width the text was designed for,
+     * so the text keeps the same size relative to the frame. Returns null when the text is invisible.
      */
     @OptIn(UnstableApi::class)
     private fun overlayFor(
         t: TextClip,
+        st: TextAnimMath.State,
         aspectRatio: Float,
-        cache: HashMap<Long, Bitmap>
-    ): BitmapOverlay {
+        previewWidthDp: Float,
+        cache: HashMap<String, Bitmap>
+    ): BitmapOverlay? {
+        if (st.alpha < 0.01f) return null
         val frameW = 1080f
         val frameH = frameW / aspectRatio
-        val scale = frameW / 360f
-        val bmp = cache.getOrPut(t.id) { TextRenderer.render(context, t, scale) }
-        // the bitmap's top-left sits at (xFrac, yFrac) of the frame; the overlay is anchored by its centre
-        val cx = t.xFrac + (bmp.width / frameW) / 2f
-        val cy = t.yFrac + (bmp.height / frameH) / 2f
+        val pxPerDp = frameW / (if (previewWidthDp > 0f) previewWidthDp else 360f)
+
+        val base = cache.getOrPut("${t.id}|100") { TextRenderer.render(context, t, pxPerDp) }
+        val sized = if (abs(st.scale - 1f) < 0.01f) {
+            base
+        } else {
+            val key = "${t.id}|${(st.scale * 100).toInt()}"
+            cache.getOrPut(key) {
+                TextRenderer.render(context, t.copy(sizeSp = t.sizeSp * st.scale), pxPerDp)
+            }
+        }
+
+        // the text is anchored by its top-left corner in the preview; the overlay is anchored by its centre
+        val cx = t.xFrac + (base.width / frameW) / 2f
+        val cy = t.yFrac + (base.height / frameH) / 2f + (st.dyDp * pxPerDp) / frameH
         val settings = OverlaySettings.Builder()
             .setBackgroundFrameAnchor(cx * 2f - 1f, 1f - cy * 2f)
+            .setAlphaScale(st.alpha)
             .build()
-        return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
+        return BitmapOverlay.createStaticBitmapOverlay(sized, settings)
     }
 
     /**
