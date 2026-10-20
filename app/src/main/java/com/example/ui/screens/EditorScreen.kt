@@ -57,6 +57,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 6f
@@ -97,6 +98,8 @@ fun EditorScreen(
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
     // The volume bar only appears after the Volume tool is pressed
     var showVolumeBar by rememberSaveable { mutableStateOf(false) }
+    // The speed choices only appear after the Speed tool is pressed
+    var showSpeedBar by rememberSaveable { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
     val timelineScroll = rememberScrollState()
@@ -371,7 +374,7 @@ fun EditorScreen(
                     .clip(CircleShape)
                     .background(Color.White)
                     .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() },
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.CenterStart.let { Alignment.Center }
             ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -383,6 +386,8 @@ fun EditorScreen(
                 text = when {
                     textMode -> "Text ${selectedText + 1}"
                     audioMode -> "Audio ${selectedAudio + 1}"
+                    hasSelection && selectedClip != null && abs(selectedClip.speed - 1f) > 0.01f ->
+                        "Clip ${selected + 1} · ${formatSpeed(selectedClip.speed)}"
                     hasSelection -> "Clip ${selected + 1}"
                     else -> "No clip"
                 },
@@ -525,6 +530,33 @@ fun EditorScreen(
                             .clip(CircleShape)
                             .background(Color.White)
                     )
+                }
+            }
+        }
+
+        // --- SPEED CHOICES (only after the Speed tool is pressed) ---
+        if (showSpeedBar && selectedClip != null && videoTools) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    Text("Speed", fontSize = 11.sp, color = Color.White)
+                }
+                items(TimelineModel.SPEED_CHOICES) { choice ->
+                    val chosen = abs(selectedClip.speed - choice) < 0.01f
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                            .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(formatSpeed(choice), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -717,6 +749,11 @@ fun EditorScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 item {
+                    ToolButton("Speed", Icons.Default.Speed, enabled = hasSelection && videoTools) {
+                        showSpeedBar = !showSpeedBar
+                    }
+                }
+                item {
                     ToolButton("Volume", Icons.Default.VolumeUp, enabled = hasSelection && videoTools) {
                         showVolumeBar = !showVolumeBar
                     }
@@ -845,4 +882,9 @@ private fun formatMs(ms: Long): String {
     val min = totalSec / 60
     val sec = totalSec % 60
     return "$min:${sec.toString().padStart(2, '0')}"
+}
+
+private fun formatSpeed(speed: Float): String {
+    val text = if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString()
+    return "${text}x"
 }
