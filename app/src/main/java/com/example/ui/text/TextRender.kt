@@ -8,9 +8,52 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import java.io.File
 
+/** Width (in dp) of the preview box the text is drawn in. Set by the preview; used to size export text the same way. */
+object TextPreviewMetrics {
+    @Volatile
+    var widthDp: Float = 0f
+}
+
+/** Animation timing shared by the preview and the export. */
+object TextAnimMath {
+    const val ANIM_MS = 400L
+    const val STEP_MS = 50L
+
+    /** How a text looks at one moment: opacity, vertical shift (dp, down is +), size factor. */
+    data class State(val alpha: Float, val dyDp: Float, val scale: Float)
+
+    /** Returns the look of [t] at [timeMs], or null if the text is not shown then. */
+    fun stateAt(t: TextClip, timeMs: Long): State? {
+        val local = (timeMs - t.startMs).toFloat()
+        if (local < 0f || local >= t.durationMs) return null
+        val inP = (local / ANIM_MS).coerceIn(0f, 1f)
+        val outP = ((t.durationMs - local) / ANIM_MS).coerceIn(0f, 1f)
+        val presence = minOf(inP, outP)
+        return when (t.anim) {
+            "fade" -> State(presence, 0f, 1f)
+            "slide" -> State(presence, (1f - inP) * 40f, 1f)
+            "drop" -> State(presence, -(1f - inP) * 60f, 1f)
+            "pop" -> State(presence, 0f, if (inP < 1f) 0.3f + 0.7f * inP else 1f)
+            else -> State(1f, 0f, 1f)
+        }
+    }
+
+    /** Moments where the look of [t] changes, so the export can cut the video there. */
+    fun breakpoints(t: TextClip): List<Long> {
+        if (t.anim == "none") return emptyList()
+        val steps = (ANIM_MS / STEP_MS).toInt()
+        val result = mutableListOf<Long>()
+        for (k in 0..steps) {
+            result.add(t.startMs + k * STEP_MS)
+            result.add(t.startMs + t.durationMs - k * STEP_MS)
+        }
+        return result
+    }
+}
+
 /**
  * Draws one text overlay into a transparent bitmap, for the exported video.
- * [scale] converts preview sizes (dp / sp) to export pixels.
+ * [scale] converts preview dp / sp to export pixels.
  */
 object TextRenderer {
 
