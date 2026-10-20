@@ -49,7 +49,9 @@ import com.example.ui.media.TimelineModel
 import com.example.ui.text.TextEditorDialog
 import com.example.ui.text.TextOverlayLayer
 import com.example.ui.text.TextTrack
-import com.example.ui.text.TextTrackView
+import com.example.ui.text.TextTrackBar
+import com.example.ui.text.textTrimEndToPlayhead
+import com.example.ui.text.textTrimStartToPlayhead
 import com.example.ui.viewmodel.VideoEditorViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -491,14 +493,11 @@ fun EditorScreen(
                     }
                     if (texts.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
-                        TextTrackView(
+                        TextTrackBar(
                             texts = texts,
                             totalMs = total,
                             selectedIndex = selectedText,
-                            onSelect = { i ->
-                                TextTrack.select(i)
-                            },
-                            onMoveBy = { i, delta -> TextTrack.moveBy(i, delta, total) },
+                            onSelect = { i -> TextTrack.select(i) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .border(
@@ -610,26 +609,49 @@ fun EditorScreen(
 
         // --- TOOLS (depend on the selected track) ---
         if (textMode) {
-            Row(
+            LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ToolButton("Edit text", Icons.Default.Edit, enabled = true) {
-                    textEditIndex = selectedText
-                    showTextDialog = true
+                item {
+                    ToolButton("Edit text", Icons.Default.Edit, enabled = true) {
+                        textEditIndex = selectedText
+                        showTextDialog = true
+                    }
                 }
-                ToolButton("Duplicate", Icons.Default.ContentCopy, enabled = true) {
-                    TextTrack.duplicate(selectedText)
+                item {
+                    ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                        TextTrack.splitById(textSel!!.id, playhead)
+                    }
                 }
-                ToolButton("Delete", Icons.Default.Delete, enabled = true) {
-                    TextTrack.delete(selectedText)
+                item {
+                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                        textTrimStartToPlayhead(selectedText, playhead)
+                    }
                 }
-                ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
-                    TextTrack.select(-1)
-                    TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                item {
+                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                        textTrimEndToPlayhead(selectedText, playhead)
+                    }
+                }
+                item {
+                    ToolButton("Duplicate", Icons.Default.ContentCopy, enabled = true) {
+                        TextTrack.duplicate(selectedText)
+                    }
+                }
+                item {
+                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                        TextTrack.delete(selectedText)
+                    }
+                }
+                item {
+                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
+                        TextTrack.select(-1)
+                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                    }
                 }
             }
         } else if (audioMode) {
