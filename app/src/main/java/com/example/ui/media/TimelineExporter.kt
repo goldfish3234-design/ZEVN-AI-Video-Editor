@@ -12,12 +12,15 @@ import android.os.Looper
 import android.provider.MediaStore
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -58,9 +61,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Text overlays (colour, outline, background, font, size, position, timing and animation) are burned
- * into the video. Overlapping audio clips are placed in separate sequences, so Media3 mixes them.
- * Must be started from the main thread.
+ * Clip speed, clip volume, text overlays (colour, outline, background, font, size, position, timing and
+ * animation) are all burned into the video. Overlapping audio clips are placed in separate sequences,
+ * so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -104,6 +107,7 @@ class TimelineExporter(private val context: Context) {
     /**
      * Cuts every video segment wherever a text starts or ends, and wherever a text's animation changes,
      * so that inside one piece every text overlay has a fixed look.
+     * Source positions are converted with each clip's speed.
      */
     private fun buildPieces(segments: List<Segment>, texts: List<TextClip>, totalMs: Long): List<VideoPiece> {
         val raw = mutableListOf(0L, totalMs)
@@ -123,7 +127,9 @@ class TimelineExporter(private val context: Context) {
                 val a = points[k]
                 val b = points[k + 1]
                 if (b > a) {
-                    pieces.add(VideoPiece(seg, seg.startMs + (a - tl0), seg.startMs + (b - tl0), a, b))
+                    val srcA = seg.startMs + ((a - tl0) * seg.speed).toLong()
+                    val srcB = seg.startMs + ((b - tl0) * seg.speed).toLong()
+                    pieces.add(VideoPiece(seg, srcA, srcB, a, b))
                 }
             }
             tl0 = tl1
@@ -167,6 +173,19 @@ class TimelineExporter(private val context: Context) {
         }
     }
 
+    /** Audio processors for one clip: speed (keeps the pitch) and volume. A new instance is needed per item. */
+    private fun audioProcessorsFor(speed: Float, volume: Float): List<AudioProcessor> {
+        val list = mutableListOf<AudioProcessor>()
+        if (abs(speed - 1f) > 0.001f) {
+            val sonic = SonicAudioProcessor()
+            sonic.setSpeed(speed)
+            sonic.setPitch(1f)
+            list.add(sonic)
+        }
+        list.add(VolumeAudioProcessor(volume))
+        return list
+    }
+
     /** [onDone] gets a human-readable location of the saved file. */
     @OptIn(UnstableApi::class)
     fun export(
@@ -187,11 +206,10 @@ class TimelineExporter(private val context: Context) {
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
         val totalMs = segments.sumOf { it.durationMs }
 
-        // ---- Video sequence: cut at text boundaries, each clip keeps its own sound level ----
+        // ---- Video sequence: cut at text boundaries; each clip keeps its speed and sound level ----
         val texts = TextTrack.texts.value
         val previewWidthDp = TextPreviewMetrics.widthDp
         val (frameW, frameH) = frameSize(sources, options.aspectRatio)
-        val videoEffects = buildVideoEffects(options)
         val bitmapCache = HashMap<String, Bitmap>()
         val videoItems = buildPieces(segments, texts, totalMs).map { p ->
             val clipped = MediaItem.Builder()
@@ -205,7 +223,10 @@ class TimelineExporter(private val context: Context) {
                 .build()
             val mid = (p.tlStart + p.tlEnd) / 2
             val effects = mutableListOf<Effect>()
-            effects.addAll(videoEffects)
+            if (abs(p.seg.speed - 1f) > 0.001f) {
+                effects.add(SpeedChangeEffect(p.seg.speed))
+            }
+            effects.addAll(buildVideoEffects(options))
 
             val overlays = mutableListOf<TextureOverlay>()
             for (t in texts) {
@@ -218,7 +239,7 @@ class TimelineExporter(private val context: Context) {
             }
 
             EditedMediaItem.Builder(clipped)
-                .setEffects(Effects(listOf(VolumeAudioProcessor(p.seg.volume)), effects))
+                .setEffects(Effects(audioProcessorsFor(p.seg.speed, p.seg.volume), effects))
                 .build()
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
@@ -245,7 +266,7 @@ class TimelineExporter(private val context: Context) {
                     .build()
                 laneItems.add(
                     EditedMediaItem.Builder(clipped)
-                        .setEffects(Effects(listOf(VolumeAudioProcessor(c.volume)), emptyList()))
+                        .setEffects(Effects(audioProcessorsFor(1f, c.volume), emptyList()))
                         .build()
                 )
                 cursor = c.offsetMs + len
@@ -330,7 +351,7 @@ class TimelineExporter(private val context: Context) {
 
     /**
      * Extracts only the sound of one clip into an audio file in the project folder.
-     * [onDone] receives the audio file's Uri and its length in ms.
+     * The sound keeps the clip's speed. [onDone] receives the audio file's Uri and its length in ms.
      */
     fun extractAudio(
         sources: List<Source>,
@@ -352,7 +373,10 @@ class TimelineExporter(private val context: Context) {
                     .build()
             )
             .build()
-        val item = EditedMediaItem.Builder(clipped).setRemoveVideo(true).build()
+        val item = EditedMediaItem.Builder(clipped)
+            .setRemoveVideo(true)
+            .setEffects(Effects(audioProcessorsFor(seg.speed, 1f), emptyList()))
+            .build()
         val composition = Composition.Builder(
             listOf(EditedMediaItemSequence.Builder(listOf(item)).build())
         ).build()
