@@ -374,7 +374,7 @@ fun EditorScreen(
                     .clip(CircleShape)
                     .background(Color.White)
                     .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() },
-                contentAlignment = Alignment.CenterStart.let { Alignment.Center }
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -544,18 +544,27 @@ fun EditorScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 item {
-                    Text("Speed", fontSize = 11.sp, color = Color.White)
-                }
-                items(TimelineModel.SPEED_CHOICES) { choice ->
-                    val chosen = abs(selectedClip.speed - choice) < 0.01f
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
-                            .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(formatSpeed(choice), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Speed", fontSize = 11.sp, color = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TimelineModel.SPEED_CHOICES.forEach { choice ->
+                            val chosen = abs(selectedClip.speed - choice) < 0.01f
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                                    .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    formatSpeed(choice),
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -656,7 +665,7 @@ fun EditorScreen(
                 }
                 item {
                     ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
-                        TextTrack.splitById(textSel!!.id, playhead)
+                        textSel?.let { TextTrack.splitById(it.id, playhead) }
                     }
                 }
                 item {
