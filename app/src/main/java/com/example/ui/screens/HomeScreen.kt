@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.AspectRatioType
 import com.example.data.model.FilterPreset
@@ -43,6 +44,10 @@ import com.example.ui.media.ProjectStore
 import com.example.ui.media.ProjectSummary
 import com.example.ui.media.TimelineModel
 import com.example.ui.viewmodel.VideoEditorViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,6 +59,7 @@ fun HomeScreen(
     onNavigateToPricing: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val isTranscribing by viewModel.isTranscribing.collectAsState()
     val isRecordingAudio by viewModel.isRecordingAudio.collectAsState()
     val transcribedText by viewModel.transcribedText.collectAsState()
@@ -65,6 +71,30 @@ fun HomeScreen(
     var showVeoDialog by remember { mutableStateOf(false) }
     var draftsVersion by remember { mutableIntStateOf(0) }
     val drafts = remember(draftsVersion) { ProjectStore.list(context) }
+
+    // Hero picture: the user's own photo (stored in app storage), or the built-in one
+    var heroVersion by remember { mutableIntStateOf(0) }
+    val heroFile = remember(heroVersion) { File(context.filesDir, "hero_image.jpg").takeIf { it.exists() } }
+    val heroPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException("Cannot read the picture")
+                        input.use { src ->
+                            File(context.filesDir, "hero_image.jpg").outputStream().use { out -> src.copyTo(out) }
+                        }
+                    }
+                    heroVersion++
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Picture could not be set: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     // Audio recorder manager
     val audioRecorder = remember { AudioRecorderManager(context) }
@@ -105,13 +135,22 @@ fun HomeScreen(
                     .background(Color(0xFF16161F))
                     .clickable { onNavigateToEditor() }
             ) {
-                // High Fashion Model with intricate red ambient pattern
-                Image(
-                    painter = painterResource(id = R.drawable.zevn_home_hero),
-                    contentDescription = "ZEVN Video Editor Hero",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
+                // Your own picture if you set one, otherwise the built-in picture
+                if (heroFile != null) {
+                    AsyncImage(
+                        model = heroFile,
+                        contentDescription = "ZEVN Video Editor Hero",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = R.drawable.zevn_home_hero),
+                        contentDescription = "ZEVN Video Editor Hero",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
                 // Dark Bottom Gradient Overlay
                 Box(
@@ -128,6 +167,19 @@ fun HomeScreen(
                             )
                         )
                 )
+
+                // Button to pick your own picture (it consumes the tap, so the card does not open)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .clickable { heroPicker.launch(arrayOf("image/*")) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("Change photo", color = Color.White, fontSize = 11.sp)
+                }
 
                 // Typography
                 Column(
@@ -576,30 +628,38 @@ fun HomeScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(14.dp))
-                    Text("Aspect Ratio", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Aspect Ratio (social media)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf(AspectRatioType.RATIO_9_16, AspectRatioType.RATIO_16_9).forEach { r ->
-                            val isSelected = projRatio == r
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) Color(0xFFFF5238) else Color(0xFF222230))
-                                    .clickable { projRatio = r }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    r.label.split(" ").firstOrNull() ?: "9:16",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                    // All ratios, three per row
+                    AspectRatioType.values().toList().chunked(3).forEach { row ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            row.forEach { r ->
+                                val isSelected = projRatio == r
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) Color(0xFFFF5238) else Color(0xFF222230))
+                                        .clickable { projRatio = r }
+                                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = r.label,
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
+                            // keep the last row's boxes the same width
+                            repeat(3 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
                         }
                     }
                 }
