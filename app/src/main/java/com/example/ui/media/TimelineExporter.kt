@@ -2,6 +2,7 @@ package com.example.ui.media
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -10,8 +11,13 @@ import android.os.Looper
 import android.provider.MediaStore
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
@@ -20,6 +26,10 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
+import com.example.ui.text.TextClip
+import com.example.ui.text.TextRenderer
+import com.example.ui.text.TextTrack
+import com.google.common.collect.ImmutableList
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -33,11 +43,21 @@ data class ExportOptions(
     val flipV: Boolean
 )
 
+/** A part of one video segment that has the same set of visible texts. */
+private data class VideoPiece(
+    val seg: Segment,
+    val srcStart: Long,
+    val srcEnd: Long,
+    val tlStart: Long,
+    val tlEnd: Long
+)
+
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Overlapping audio clips are placed in separate sequences, so Media3 mixes them together.
- * Must be started from the main thread.
+ * Text overlays from the text track are burned into the video. Overlapping audio clips are placed in
+ * separate sequences, so Media3 mixes them together. Must be started from the main thread.
  */
+@UnstableApi
 class TimelineExporter(private val context: Context) {
 
     private var transformer: Transformer? = null
@@ -77,6 +97,29 @@ class TimelineExporter(private val context: Context) {
         return lanes
     }
 
+    /** Cuts every video segment wherever a text starts or ends, so each piece has a fixed set of texts. */
+    private fun buildPieces(segments: List<Segment>, texts: List<TextClip>, totalMs: Long): List<VideoPiece> {
+        val breaks = (listOf(0L, totalMs) + texts.flatMap { listOf(it.startMs, it.startMs + it.durationMs) })
+            .filter { it in 0L..totalMs }
+            .distinct()
+            .sorted()
+        val pieces = mutableListOf<VideoPiece>()
+        var tl0 = 0L
+        for (seg in segments) {
+            val tl1 = tl0 + seg.durationMs
+            val points = listOf(tl0) + breaks.filter { it > tl0 && it < tl1 } + listOf(tl1)
+            for (k in 0 until points.size - 1) {
+                val a = points[k]
+                val b = points[k + 1]
+                if (b > a) {
+                    pieces.add(VideoPiece(seg, seg.startMs + (a - tl0), seg.startMs + (b - tl0), a, b))
+                }
+            }
+            tl0 = tl1
+        }
+        return pieces
+    }
+
     /** [onDone] gets a human-readable location of the saved file. */
     fun export(
         sources: List<Source>,
@@ -96,20 +139,30 @@ class TimelineExporter(private val context: Context) {
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
         val totalMs = segments.sumOf { it.durationMs }
 
-        // ---- Video sequence: each clip keeps its own sound level ----
+        // ---- Video sequence: cut at text boundaries, each clip keeps its own sound level ----
+        val texts = TextTrack.texts.value
         val videoEffects = buildVideoEffects(options)
-        val videoItems = segments.map { seg ->
+        val bitmapCache = HashMap<Long, Bitmap>()
+        val videoItems = buildPieces(segments, texts, totalMs).map { p ->
             val clipped = MediaItem.Builder()
-                .setUri(sources[seg.source].uri)
+                .setUri(sources[p.seg.source].uri)
                 .setClippingConfiguration(
                     MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(seg.startMs)
-                        .setEndPositionMs(seg.endMs)
+                        .setStartPositionMs(p.srcStart)
+                        .setEndPositionMs(p.srcEnd)
                         .build()
                 )
                 .build()
+            val mid = (p.tlStart + p.tlEnd) / 2
+            val active = texts.filter { mid >= it.startMs && mid < it.startMs + it.durationMs }
+            val effects = mutableListOf<Effect>()
+            effects.addAll(videoEffects)
+            if (active.isNotEmpty()) {
+                val overlays: List<TextureOverlay> = active.map { overlayFor(it, options.aspectRatio, bitmapCache) }
+                effects.add(OverlayEffect(ImmutableList.copyOf(overlays)))
+            }
             EditedMediaItem.Builder(clipped)
-                .setEffects(Effects(listOf(VolumeAudioProcessor(seg.volume)), videoEffects))
+                .setEffects(Effects(listOf(VolumeAudioProcessor(p.seg.volume)), effects))
                 .build()
         }
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(videoItems).build())
@@ -179,6 +232,28 @@ class TimelineExporter(private val context: Context) {
 
         transformer = t
         t.start(composition, tempFile.absolutePath)
+    }
+
+    /**
+     * A text overlay placed where it appears in the preview.
+     * The export frame is 1080 px wide; the preview is taken as about 360 dp wide.
+     */
+    private fun overlayFor(
+        t: TextClip,
+        aspectRatio: Float,
+        cache: HashMap<Long, Bitmap>
+    ): BitmapOverlay {
+        val frameW = 1080f
+        val frameH = frameW / aspectRatio
+        val scale = frameW / 360f
+        val bmp = cache.getOrPut(t.id) { TextRenderer.render(context, t, scale) }
+        // the bitmap's top-left sits at (xFrac, yFrac) of the frame; the overlay is anchored by its centre
+        val cx = t.xFrac + (bmp.width / frameW) / 2f
+        val cy = t.yFrac + (bmp.height / frameH) / 2f
+        val settings = OverlaySettings.Builder()
+            .setBackgroundFrameAnchor(cx * 2f - 1f, 1f - cy * 2f)
+            .build()
+        return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
     }
 
     /**
