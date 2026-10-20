@@ -5,6 +5,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -19,14 +20,30 @@ import kotlin.math.abs
 /** How many overlapping audio layers can play together in the preview. */
 private const val MAX_AUDIO_LANES = 4
 
-/** Sets the video player's volume to the sound level of the clip that is playing now. */
+/**
+ * Sets the video player's volume and speed to the values of the clip that is playing now.
+ * Clip volume is applied directly; speed is applied with playback parameters (pitch is kept).
+ */
 private fun applyClipVolume(player: ExoPlayer) {
-    val segs = TimelineModel.segments.value
-    player.volume = segs.getOrNull(player.currentMediaItemIndex)?.volume ?: 1f
+    val seg = TimelineModel.segments.value.getOrNull(player.currentMediaItemIndex)
+    player.volume = seg?.volume ?: 1f
+    val speed = seg?.speed ?: 1f
+    if (abs(player.playbackParameters.speed - speed) > 0.001f) {
+        player.playbackParameters = PlaybackParameters(speed)
+    }
 }
 
 /**
- * Plays the timeline: video segments one after another (each with its own sound level),
+ * Converts a position on the timeline inside a clip (timeline ms) to a position in the source
+ * file (source ms), using the clip's speed. The player works in source time.
+ */
+private fun sourcePosition(segmentIndex: Int, timelineOffsetMs: Long): Long {
+    val speed = TimelineModel.segments.value.getOrNull(segmentIndex)?.speed ?: 1f
+    return (timelineOffsetMs * speed).toLong()
+}
+
+/**
+ * Plays the timeline: video segments one after another (each with its own sound level and speed),
  * and the audio clips at their timeline positions. Overlapping audio clips play together.
  */
 @Composable
@@ -118,7 +135,7 @@ fun VideoPreview(
         }
     }
 
-    // Rebuild the playlist when clips change (not when only a volume changes)
+    // Rebuild the playlist when clips change (not when only a volume or speed changes)
     val clipKey = segments.map { Triple(it.source, it.startMs, it.endMs) }
     LaunchedEffect(clipKey, sources) {
         if (segments.isNotEmpty() && sources.isNotEmpty()) {
@@ -134,13 +151,13 @@ fun VideoPreview(
                     .build()
             }
             val (index, offset) = TimelineModel.locate(TimelineModel.playheadMs.value)
-            player.setMediaItems(items, index, offset)
+            player.setMediaItems(items, index, sourcePosition(index, offset))
             player.prepare()
             applyClipVolume(player)
         }
     }
 
-    // A clip's sound level changed
+    // A clip's sound level or speed changed
     LaunchedEffect(segments) {
         applyClipVolume(player)
     }
@@ -163,7 +180,7 @@ fun VideoPreview(
     LaunchedEffect(seekRequest) {
         val req = seekRequest ?: return@LaunchedEffect
         val (index, offset) = TimelineModel.locate(req.ms)
-        player.seekTo(index, offset)
+        player.seekTo(index, sourcePosition(index, offset))
         applyClipVolume(player)
         syncAudio(req.ms, TimelineModel.isPlaying.value)
     }
@@ -176,7 +193,9 @@ fun VideoPreview(
                 val idx = player.currentMediaItemIndex
                 var before = 0L
                 for (k in 0 until minOf(idx, segs.size)) before += segs[k].durationMs
-                val ph = before + player.currentPosition
+                // the player reports source time; the timeline counts time at the clip's speed
+                val speed = segs.getOrNull(idx)?.speed ?: 1f
+                val ph = before + (player.currentPosition / speed).toLong()
                 TimelineModel.setPlayhead(ph)
                 syncAudio(ph, true)
             }
