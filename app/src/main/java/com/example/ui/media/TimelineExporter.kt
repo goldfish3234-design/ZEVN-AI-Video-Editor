@@ -57,7 +57,6 @@ private data class VideoPiece(
  * Text overlays from the text track are burned into the video. Overlapping audio clips are placed in
  * separate sequences, so Media3 mixes them together. Must be started from the main thread.
  */
-@UnstableApi
 class TimelineExporter(private val context: Context) {
 
     private var transformer: Transformer? = null
@@ -121,6 +120,7 @@ class TimelineExporter(private val context: Context) {
     }
 
     /** [onDone] gets a human-readable location of the saved file. */
+    @OptIn(UnstableApi::class)
     fun export(
         sources: List<Source>,
         segments: List<Segment>,
@@ -238,6 +238,7 @@ class TimelineExporter(private val context: Context) {
      * A text overlay placed where it appears in the preview.
      * The export frame is 1080 px wide; the preview is taken as about 360 dp wide.
      */
+    @OptIn(UnstableApi::class)
     private fun overlayFor(
         t: TextClip,
         aspectRatio: Float,
