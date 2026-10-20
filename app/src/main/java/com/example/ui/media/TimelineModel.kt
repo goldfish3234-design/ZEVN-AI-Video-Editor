@@ -8,9 +8,20 @@ import kotlinx.coroutines.flow.asStateFlow
 /** A video file the user imported (a private copy in the project folder). */
 data class Source(val uri: Uri, val durationMs: Long)
 
-/** One piece of a source video, in source time (ms). [source] indexes the sources list. [volume] is the clip's own sound level. */
-data class Segment(val source: Int, val startMs: Long, val endMs: Long, val volume: Float = 1f) {
-    val durationMs: Long get() = endMs - startMs
+/**
+ * One piece of a source video. [startMs]..[endMs] is the part of the source file (source ms).
+ * [volume] is the clip's own sound level. [speed] is the playback speed (2.0 = twice as fast).
+ * [durationMs] is the length on the timeline, which depends on the speed.
+ */
+data class Segment(
+    val source: Int,
+    val startMs: Long,
+    val endMs: Long,
+    val volume: Float = 1f,
+    val speed: Float = 1f
+) {
+    val sourceDurationMs: Long get() = endMs - startMs
+    val durationMs: Long get() = (sourceDurationMs / speed).toLong()
 }
 
 /** Asks the player to jump to a timeline position. The id makes repeated seeks to the same spot trigger again. */
@@ -41,6 +52,11 @@ enum class ActiveTrack { VIDEO, MUSIC }
  */
 object TimelineModel {
     private const val MIN_SEGMENT_MS = 300L
+
+    /** Speed limits and the choices shown in the editor. */
+    const val MIN_SPEED = 0.25f
+    const val MAX_SPEED = 4f
+    val SPEED_CHOICES: List<Float> = listOf(0.25f, 0.5f, 1f, 2f, 4f)
 
     private data class Snapshot(val segments: List<Segment>, val audio: List<MusicTrack>)
 
@@ -154,6 +170,19 @@ object TimelineModel {
         val out = ArrayList<Segment>(list)
         out[index] = list[index].copy(volume = volume.coerceIn(0f, 1f))
         _segments.value = out
+    }
+
+    /** Sets the playback speed of one video clip (for example 0.5, 1, 2). Added to history. */
+    fun setSegmentSpeed(index: Int, speed: Float) {
+        val list = _segments.value
+        if (index !in list.indices) return
+        val s = speed.coerceIn(MIN_SPEED, MAX_SPEED)
+        if (list[index].speed == s) return
+        recordHistory()
+        val out = ArrayList<Segment>(list)
+        out[index] = list[index].copy(speed = s)
+        _segments.value = out
+        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
     }
 
     // ---------------- Audio track ----------------
@@ -319,7 +348,10 @@ object TimelineModel {
 
     // ---------------- Playback ----------------
 
-    /** Maps a timeline time to (segment index, position inside that segment). */
+    /**
+     * Maps a timeline time to (segment index, position inside that segment, on the timeline).
+     * To seek the player, convert the position to source time with the segment's speed.
+     */
     fun locate(timeMs: Long): Pair<Int, Long> {
         val list = _segments.value
         if (list.isEmpty()) return Pair(0, 0L)
@@ -379,7 +411,7 @@ object TimelineModel {
                 rel >= MIN_SEGMENT_MS &&
                 s.durationMs - rel >= MIN_SEGMENT_MS
             if (canSplit) {
-                val cut = s.startMs + rel
+                val cut = s.startMs + (rel * s.speed).toLong()
                 out.add(s.copy(endMs = cut))
                 out.add(s.copy(startMs = cut))
             } else {
@@ -458,7 +490,7 @@ object TimelineModel {
         if (rel <= 0L || s.durationMs - rel < MIN_SEGMENT_MS) return
         recordHistory()
         val out = ArrayList<Segment>(list)
-        out[i] = s.copy(startMs = s.startMs + rel)
+        out[i] = s.copy(startMs = s.startMs + (rel * s.speed).toLong())
         _segments.value = out
     }
 
@@ -471,7 +503,7 @@ object TimelineModel {
         if (rel < MIN_SEGMENT_MS || rel >= s.durationMs) return
         recordHistory()
         val out = ArrayList<Segment>(list)
-        out[i] = s.copy(endMs = s.startMs + rel)
+        out[i] = s.copy(endMs = s.startMs + (rel * s.speed).toLong())
         _segments.value = out
     }
 }
