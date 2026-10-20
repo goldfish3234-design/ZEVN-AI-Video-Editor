@@ -21,8 +21,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,7 +43,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** One text overlay. Times are timeline ms. Position is a fraction of the preview (0..1). */
+private const val HANDLE_PX = 48f
+private const val MIN_TEXT_MS = 300L
+private const val ANIM_MS = 400f
+
+/**
+ * One text overlay. Times are timeline ms. Position is a fraction of the preview (0..1).
+ * [outlineWidth] is in dp (0 = no outline). [bgColor] is ARGB, used when [background] is on.
+ * [anim] is one of: none, fade, slide, pop, drop.
+ */
 data class TextClip(
     val id: Long,
     val text: String,
@@ -50,7 +63,11 @@ data class TextClip(
     val bold: Boolean,
     val background: Boolean,
     val xFrac: Float,
-    val yFrac: Float
+    val yFrac: Float,
+    val outlineColor: Long = 0xFF000000L,
+    val outlineWidth: Float = 0f,
+    val bgColor: Long = 0xCC000000L,
+    val anim: String = "none"
 )
 
 /** Built-in fonts plus fonts the user imported from the phone (stored in app storage). */
@@ -159,11 +176,42 @@ object TextTrack {
         val maxStart = maxOf(0L, totalMs - c.durationMs)
         replace(index, c.copy(startMs = (c.startMs + deltaMs).coerceIn(0L, maxStart)))
     }
+
+    /** Moves the start edge: the text starts later or earlier, and its end stays where it is. */
+    fun trimStartBy(index: Int, deltaMs: Long) {
+        val c = _texts.value.getOrNull(index) ?: return
+        val end = c.startMs + c.durationMs
+        val newStart = (c.startMs + deltaMs).coerceIn(0L, end - MIN_TEXT_MS)
+        replace(index, c.copy(startMs = newStart, durationMs = end - newStart))
+    }
+
+    /** Moves the end edge: the text gets longer or shorter. */
+    fun trimEndBy(index: Int, deltaMs: Long, totalMs: Long) {
+        val c = _texts.value.getOrNull(index) ?: return
+        val maxDur = if (totalMs > 0L) maxOf(MIN_TEXT_MS, totalMs - c.startMs) else Long.MAX_VALUE
+        replace(index, c.copy(durationMs = (c.durationMs + deltaMs).coerceIn(MIN_TEXT_MS, maxDur)))
+    }
 }
 
-/** Colour choices for text. */
+/** Text colour choices (used for the text and the outline). */
 val TextColors: List<Long> = listOf(
-    0xFFFFFFFFL, 0xFF000000L, 0xFFFFD60AL, 0xFFFF5238L, 0xFF00E5FFL, 0xFF00FF9DL, 0xFFFF9F0AL
+    0xFFFFFFFFL, 0xFF000000L, 0xFFFFD60AL, 0xFFFF5238L, 0xFF00E5FFL, 0xFF00FF9DL, 0xFFFF9F0AL,
+    0xFFB388FFL, 0xFF2979FFL
+)
+
+/** Background colour choices, with transparency built in. */
+val BackgroundColors: List<Long> = listOf(
+    0xCC000000L, 0x66000000L, 0xCCFFFFFFL, 0xCCFF5238L, 0xCCFFD60AL,
+    0xCC00E5FFL, 0xCC1E88E5L, 0xCC7C4DFFL, 0xCC00C853L
+)
+
+/** Animation choices: (key, label). */
+val TextAnimations: List<Pair<String, String>> = listOf(
+    "none" to "None",
+    "fade" to "Fade",
+    "slide" to "Slide up",
+    "pop" to "Pop",
+    "drop" to "Drop"
 )
 
 /** Draws the text overlays that are visible at the playhead, on top of the video preview. */
@@ -174,37 +222,83 @@ fun TextOverlayLayer(texts: List<TextClip>, playheadMs: Long, modifier: Modifier
         val h = maxHeight
         texts.forEach { t ->
             if (playheadMs >= t.startMs && playheadMs < t.startMs + t.durationMs) {
-                TextOverlayItem(t, w, h)
+                TextOverlayItem(t, w, h, playheadMs)
             }
         }
     }
 }
 
 @Composable
-private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp) {
+private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val family = remember(t.fontId) { FontLibrary.family(context, t.fontId) }
+
+    // Enter / exit progress (0..1) for the animation
+    val local = (playheadMs - t.startMs).toFloat()
+    val inP = (local / ANIM_MS).coerceIn(0f, 1f)
+    val outP = ((t.durationMs - local) / ANIM_MS).coerceIn(0f, 1f)
+    val presence = minOf(inP, outP)
+    val alpha = presence
+    val dyDp = when (t.anim) {
+        "slide" -> (1f - inP) * 40f
+        "drop" -> -(1f - inP) * 60f
+        else -> 0f
+    }
+    val scale = when (t.anim) {
+        "pop" -> if (inP < 1f) 0.3f + 0.7f * inP else 1f
+        else -> 1f
+    }
+    val animAlpha = if (t.anim == "none") 1f else alpha
+
     val bg = if (t.background) {
         Modifier
-            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+            .background(Color(t.bgColor), RoundedCornerShape(6.dp))
             .padding(horizontal = 6.dp, vertical = 2.dp)
     } else {
         Modifier
     }
-    Text(
-        text = t.text,
-        fontFamily = family,
-        fontSize = t.sizeSp.sp,
-        fontWeight = if (t.bold) FontWeight.Bold else FontWeight.Normal,
-        color = Color(t.colorArgb),
-        textAlign = TextAlign.Start,
+    val outlinePx = with(density) { t.outlineWidth.dp.toPx() }
+    val weight = if (t.bold) FontWeight.Bold else FontWeight.Normal
+
+    Box(
         modifier = Modifier
-            .offset(x = w * t.xFrac, y = h * t.yFrac)
+            .offset(x = w * t.xFrac, y = h * t.yFrac + dyDp.dp)
+            .graphicsLayer {
+                this.alpha = animAlpha
+                scaleX = scale
+                scaleY = scale
+            }
             .then(bg)
-    )
+    ) {
+        if (t.outlineWidth > 0f) {
+            Text(
+                text = t.text,
+                style = TextStyle(
+                    fontFamily = family,
+                    fontSize = t.sizeSp.sp,
+                    fontWeight = weight,
+                    textAlign = TextAlign.Start,
+                    drawStyle = Stroke(width = outlinePx * 2f, join = StrokeJoin.Round)
+                ),
+                color = Color(t.outlineColor)
+            )
+        }
+        Text(
+            text = t.text,
+            fontFamily = family,
+            fontSize = t.sizeSp.sp,
+            fontWeight = weight,
+            color = Color(t.colorArgb),
+            textAlign = TextAlign.Start
+        )
+    }
 }
 
-/** Text track: one block per text overlay. Tap to select, drag to move in time. */
+/**
+ * Text track: one block per text overlay.
+ * Tap to select, drag the middle to move in time, drag the left/right edge to change the start/end.
+ */
 @Composable
 fun TextTrackView(
     texts: List<TextClip>,
@@ -237,12 +331,27 @@ fun TextTrackView(
                         detectTapGestures(onTap = { onSelect(i) })
                     }
                     .pointerInput(i, total) {
+                        // 0 = move, 1 = trim start, 2 = trim end
+                        var mode = 0
                         detectDragGestures(
-                            onDragStart = { onSelect(i) },
+                            onDragStart = { offset ->
+                                val w = size.width.toFloat()
+                                mode = when {
+                                    offset.x < HANDLE_PX -> 1
+                                    offset.x > w - HANDLE_PX -> 2
+                                    else -> 0
+                                }
+                                onSelect(i)
+                            },
                             onDrag = { change, drag ->
                                 change.consume()
                                 if (size.width > 0) {
-                                    onMoveBy(i, (drag.x / size.width.toFloat() * total.toFloat()).toLong())
+                                    val deltaMs = (drag.x / size.width.toFloat() * total.toFloat()).toLong()
+                                    when (mode) {
+                                        0 -> onMoveBy(i, deltaMs)
+                                        1 -> TextTrack.trimStartBy(i, deltaMs)
+                                        else -> TextTrack.trimEndBy(i, deltaMs, total)
+                                    }
                                 }
                             }
                         )
@@ -261,7 +370,11 @@ fun TextTrackView(
     }
 }
 
-/** Dialog to add or edit a text overlay: text, font (incl. imported fonts), size, colour, style, time, position. */
+/**
+ * Dialog to add or edit a text overlay:
+ * text, font, size, text colour, outline (colour + width), background (on/off + colour),
+ * style (bold), position, duration and animation.
+ */
 @Composable
 fun TextEditorDialog(
     initial: TextClip?,
@@ -276,10 +389,14 @@ fun TextEditorDialog(
     var fontId by remember { mutableStateOf(initial?.fontId ?: "default") }
     var sizeSp by remember { mutableStateOf(initial?.sizeSp ?: 28f) }
     var colorArgb by remember { mutableStateOf(initial?.colorArgb ?: 0xFFFFFFFFL) }
+    var outlineColor by remember { mutableStateOf(initial?.outlineColor ?: 0xFF000000L) }
+    var outlineWidth by remember { mutableStateOf(initial?.outlineWidth ?: 0f) }
     var bold by remember { mutableStateOf(initial?.bold ?: true) }
     var background by remember { mutableStateOf(initial?.background ?: false) }
+    var bgColor by remember { mutableStateOf(initial?.bgColor ?: 0xCC000000L) }
     var durationMs by remember { mutableStateOf((initial?.durationMs ?: 3000L).toFloat()) }
     var yFrac by remember { mutableStateOf(initial?.yFrac ?: 0.8f) }
+    var anim by remember { mutableStateOf(initial?.anim ?: "none") }
     var fonts by remember { mutableStateOf(FontLibrary.options(context)) }
 
     val importFont = rememberLauncherForActivityResult(
@@ -296,6 +413,10 @@ fun TextEditorDialog(
                 }
             }
         }
+    }
+
+    val sectionTitle = @Composable { label: String ->
+        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 
     AlertDialog(
@@ -317,15 +438,14 @@ fun TextEditorDialog(
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("Font", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                sectionTitle("Font")
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     fonts.forEach { (id, label) ->
-                        val selectedFont = fontId == id
                         Box(
                             modifier = Modifier
                                 .padding(end = 6.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (selectedFont) Color(0xFFFF5238) else Color(0xFF222230))
+                                .background(if (fontId == id) Color(0xFFFF5238) else Color(0xFF222230))
                                 .clickable { fontId = id }
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
@@ -354,25 +474,32 @@ fun TextEditorDialog(
                     )
                 )
 
-                Text("Colour", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                sectionTitle("Text colour")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextColors.forEach { c ->
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(Color(c))
-                                .border(
-                                    width = if (colorArgb == c) 3.dp else 1.dp,
-                                    color = if (colorArgb == c) Color(0xFFFF5238) else Color(0xFF555566),
-                                    shape = CircleShape
-                                )
-                                .clickable { colorArgb = c }
-                        )
+                        ColorDot(c, selected = colorArgb == c) { colorArgb = c }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
+                sectionTitle("Outline")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextColors.forEach { c ->
+                        ColorDot(c, selected = outlineColor == c) { outlineColor = c }
+                    }
+                }
+                Text("Outline width: ${"%.1f".format(outlineWidth)} dp", color = Color.White, fontSize = 12.sp)
+                Slider(
+                    value = outlineWidth,
+                    onValueChange = { outlineWidth = it },
+                    valueRange = 0f..6f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFFFF5238),
+                        activeTrackColor = Color(0xFFFF5238)
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = bold, onCheckedChange = { bold = it })
                     Text("Bold", color = Color.White, fontSize = 12.sp)
@@ -381,14 +508,23 @@ fun TextEditorDialog(
                     Text("Background", color = Color.White, fontSize = 12.sp)
                 }
 
-                Text("Position", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                if (background) {
+                    sectionTitle("Background colour")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BackgroundColors.forEach { c ->
+                            ColorDot(c, selected = bgColor == c) { bgColor = c }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                sectionTitle("Position")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("Top" to 0.08f, "Middle" to 0.45f, "Bottom" to 0.8f).forEach { (label, y) ->
-                        val chosen = yFrac == y
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                                .background(if (yFrac == y) Color(0xFFFF5238) else Color(0xFF222230))
                                 .clickable { yFrac = y }
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
@@ -398,8 +534,25 @@ fun TextEditorDialog(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
+                sectionTitle("Animation")
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    TextAnimations.forEach { (key, label) ->
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (anim == key) Color(0xFF7C4DFF) else Color(0xFF222230))
+                                .clickable { anim = key }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(label, color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    "Duration: ${"%.1f".format(durationMs / 1000f)} s",
+                    "Duration: ${"%.1f".format(durationMs / 1000f)} s  (drag the text's edges on the timeline to change start/end)",
                     color = Color.White,
                     fontSize = 12.sp
                 )
@@ -418,18 +571,41 @@ fun TextEditorDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(70.dp)
+                        .height(80.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color(0xFF0C0C10)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = text.ifBlank { "Text" },
-                        fontFamily = FontLibrary.family(context, fontId),
-                        fontSize = sizeSp.sp,
-                        fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
-                        color = Color(colorArgb)
-                    )
+                    val family = FontLibrary.family(context, fontId)
+                    val weight = if (bold) FontWeight.Bold else FontWeight.Normal
+                    val inner = if (background) {
+                        Modifier
+                            .background(Color(bgColor), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    } else {
+                        Modifier
+                    }
+                    Box(modifier = inner) {
+                        if (outlineWidth > 0f) {
+                            Text(
+                                text = text.ifBlank { "Text" },
+                                style = TextStyle(
+                                    fontFamily = family,
+                                    fontSize = sizeSp.sp,
+                                    fontWeight = weight,
+                                    drawStyle = Stroke(width = outlineWidth * 2f, join = StrokeJoin.Round)
+                                ),
+                                color = Color(outlineColor)
+                            )
+                        }
+                        Text(
+                            text = text.ifBlank { "Text" },
+                            fontFamily = family,
+                            fontSize = sizeSp.sp,
+                            fontWeight = weight,
+                            color = Color(colorArgb)
+                        )
+                    }
                 }
             }
         },
@@ -448,7 +624,11 @@ fun TextEditorDialog(
                             bold = bold,
                             background = background,
                             xFrac = initial?.xFrac ?: 0.08f,
-                            yFrac = yFrac
+                            yFrac = yFrac,
+                            outlineColor = outlineColor,
+                            outlineWidth = outlineWidth,
+                            bgColor = bgColor,
+                            anim = anim
                         )
                     )
                 },
@@ -462,5 +642,21 @@ fun TextEditorDialog(
                 Text("Cancel", color = Color(0xFFA0A0B2))
             }
         }
+    )
+}
+
+@Composable
+private fun ColorDot(color: Long, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(Color(color))
+            .border(
+                width = if (selected) 3.dp else 1.dp,
+                color = if (selected) Color(0xFFFF5238) else Color(0xFF555566),
+                shape = CircleShape
+            )
+            .clickable { onClick() }
     )
 }
