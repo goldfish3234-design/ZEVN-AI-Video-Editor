@@ -127,11 +127,14 @@ dependencies {
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
 
-  // Media3: video preview (ExoPlayer) and export (Transformer)
+  // Media3: video preview (ExoPlayer), export (Transformer) and text overlays (effect)
   implementation("androidx.media3:media3-exoplayer:1.5.1")
   implementation("androidx.media3:media3-ui:1.5.1")
   implementation("androidx.media3:media3-transformer:1.5.1")
   implementation("androidx.media3:media3-effect:1.5.1")
+  implementation("androidx.media3:media3-common:1.5.1")
+  // ImmutableList is used by the Media3 overlay API
+  implementation("com.google.guava:guava:33.3.1-android")
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
