@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.media.TimelineModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -191,6 +192,22 @@ object TextTrack {
         val maxDur = if (totalMs > 0L) maxOf(MIN_TEXT_MS, totalMs - c.startMs) else Long.MAX_VALUE
         replace(index, c.copy(durationMs = (c.durationMs + deltaMs).coerceIn(MIN_TEXT_MS, maxDur)))
     }
+
+    /** Cuts the text with this id into two texts at [timeMs] (timeline ms). Does nothing if the cut is too close to an edge. */
+    fun splitById(id: Long, timeMs: Long) {
+        val index = _texts.value.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val c = _texts.value[index]
+        val end = c.startMs + c.durationMs
+        if (timeMs - c.startMs < MIN_TEXT_MS || end - timeMs < MIN_TEXT_MS) return
+        val left = c.copy(durationMs = timeMs - c.startMs)
+        val right = c.copy(id = newId(), startMs = timeMs, durationMs = end - timeMs)
+        val out = ArrayList(_texts.value)
+        out[index] = left
+        out.add(index + 1, right)
+        _texts.value = out
+        _selected.value = index + 1
+    }
 }
 
 /** Text colour choices (used for the text and the outline). */
@@ -239,7 +256,6 @@ private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
     val inP = (local / ANIM_MS).coerceIn(0f, 1f)
     val outP = ((t.durationMs - local) / ANIM_MS).coerceIn(0f, 1f)
     val presence = minOf(inP, outP)
-    val alpha = presence
     val dyDp = when (t.anim) {
         "slide" -> (1f - inP) * 40f
         "drop" -> -(1f - inP) * 60f
@@ -249,7 +265,7 @@ private fun TextOverlayItem(t: TextClip, w: Dp, h: Dp, playheadMs: Long) {
         "pop" -> if (inP < 1f) 0.3f + 0.7f * inP else 1f
         else -> 1f
     }
-    val animAlpha = if (t.anim == "none") 1f else alpha
+    val animAlpha = if (t.anim == "none") 1f else presence
 
     val bg = if (t.background) {
         Modifier
@@ -371,9 +387,64 @@ fun TextTrackView(
 }
 
 /**
+ * Colour plate: pick any colour with the red, green, blue (and optionally alpha) sliders.
+ * Shows a live swatch and the hex code.
+ */
+@Composable
+fun ColorPlate(color: Long, showAlpha: Boolean, onChange: (Long) -> Unit) {
+    val a = ((color shr 24) and 0xFF).toInt()
+    val r = ((color shr 16) and 0xFF).toInt()
+    val g = ((color shr 8) and 0xFF).toInt()
+    val b = (color and 0xFF).toInt()
+
+    fun pack(na: Int, nr: Int, ng: Int, nb: Int): Long =
+        ((na.toLong() and 0xFF) shl 24) or ((nr.toLong() and 0xFF) shl 16) or
+            ((ng.toLong() and 0xFF) shl 8) or (nb.toLong() and 0xFF)
+
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(color))
+                    .border(1.dp, Color(0xFF555566), RoundedCornerShape(10.dp))
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = "#" + java.lang.Long.toHexString(color).uppercase().padStart(8, '0'),
+                color = Color.White,
+                fontSize = 12.sp
+            )
+        }
+        ChannelSlider("R", r, Color(0xFFFF5252)) { onChange(pack(a, it, g, b)) }
+        ChannelSlider("G", g, Color(0xFF69F0AE)) { onChange(pack(a, r, it, b)) }
+        ChannelSlider("B", b, Color(0xFF448AFF)) { onChange(pack(a, r, g, it)) }
+        if (showAlpha) {
+            ChannelSlider("A", a, Color(0xFFBDBDBD)) { onChange(pack(it, r, g, b)) }
+        }
+    }
+}
+
+@Composable
+private fun ChannelSlider(label: String, value: Int, tint: Color, onValue: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 12.sp, modifier = Modifier.width(16.dp))
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValue(it.toInt().coerceIn(0, 255)) },
+            valueRange = 0f..255f,
+            colors = SliderDefaults.colors(thumbColor = tint, activeTrackColor = tint),
+            modifier = Modifier.weight(1f)
+        )
+        Text("$value", color = Color(0xFFA0A0B2), fontSize = 11.sp, modifier = Modifier.width(34.dp))
+    }
+}
+
+/**
  * Dialog to add or edit a text overlay:
- * text, font, size, text colour, outline (colour + width), background (on/off + colour),
- * style (bold), position, duration and animation.
+ * text, font, size, colours (text / outline / background, with a colour plate), outline width,
+ * style, position, duration and animation. Also "Cut at playhead" to split the text.
  */
 @Composable
 fun TextEditorDialog(
@@ -398,6 +469,8 @@ fun TextEditorDialog(
     var yFrac by remember { mutableStateOf(initial?.yFrac ?: 0.8f) }
     var anim by remember { mutableStateOf(initial?.anim ?: "none") }
     var fonts by remember { mutableStateOf(FontLibrary.options(context)) }
+    // Which colour the plate edits: 0 = text, 1 = outline, 2 = background
+    var colorTarget by remember { mutableStateOf(0) }
 
     val importFont = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -413,10 +486,6 @@ fun TextEditorDialog(
                 }
             }
         }
-    }
-
-    val sectionTitle = @Composable { label: String ->
-        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 
     AlertDialog(
@@ -438,19 +507,10 @@ fun TextEditorDialog(
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
-                sectionTitle("Font")
+                DialogTitle("Font")
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     fonts.forEach { (id, label) ->
-                        Box(
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (fontId == id) Color(0xFFFF5238) else Color(0xFF222230))
-                                .clickable { fontId = id }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(label, color = Color.White, fontSize = 11.sp)
-                        }
+                        Chip(label, selected = fontId == id, color = Color(0xFFFF5238)) { fontId = id }
                     }
                 }
                 Spacer(modifier = Modifier.height(6.dp))
@@ -474,20 +534,51 @@ fun TextEditorDialog(
                     )
                 )
 
-                sectionTitle("Text colour")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextColors.forEach { c ->
-                        ColorDot(c, selected = colorArgb == c) { colorArgb = c }
+                DialogTitle("Colour")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Chip("Text", selected = colorTarget == 0, color = Color(0xFFFF5238)) { colorTarget = 0 }
+                    Chip("Outline", selected = colorTarget == 1, color = Color(0xFFFF5238)) { colorTarget = 1 }
+                    if (background) {
+                        Chip("Background", selected = colorTarget == 2, color = Color(0xFFFF5238)) { colorTarget = 2 }
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val palette = if (colorTarget == 2) BackgroundColors else TextColors
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    palette.forEach { c ->
+                        val current = when (colorTarget) {
+                            0 -> colorArgb
+                            1 -> outlineColor
+                            else -> bgColor
+                        }
+                        ColorDot(c, selected = current == c) {
+                            when (colorTarget) {
+                                0 -> colorArgb = c
+                                1 -> outlineColor = c
+                                else -> bgColor = c
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                ColorPlate(
+                    color = when (colorTarget) {
+                        0 -> colorArgb
+                        1 -> outlineColor
+                        else -> bgColor
+                    },
+                    showAlpha = colorTarget == 2,
+                    onChange = { c ->
+                        when (colorTarget) {
+                            0 -> colorArgb = c
+                            1 -> outlineColor = c
+                            else -> bgColor = c
+                        }
+                    }
+                )
 
                 Spacer(modifier = Modifier.height(10.dp))
-                sectionTitle("Outline")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextColors.forEach { c ->
-                        ColorDot(c, selected = outlineColor == c) { outlineColor = c }
-                    }
-                }
                 Text("Outline width: ${"%.1f".format(outlineWidth)} dp", color = Color.White, fontSize = 12.sp)
                 Slider(
                     value = outlineWidth,
@@ -504,49 +595,26 @@ fun TextEditorDialog(
                     Checkbox(checked = bold, onCheckedChange = { bold = it })
                     Text("Bold", color = Color.White, fontSize = 12.sp)
                     Spacer(modifier = Modifier.width(14.dp))
-                    Checkbox(checked = background, onCheckedChange = { background = it })
+                    Checkbox(checked = background, onCheckedChange = {
+                        background = it
+                        if (!it && colorTarget == 2) colorTarget = 0
+                    })
                     Text("Background", color = Color.White, fontSize = 12.sp)
                 }
 
-                if (background) {
-                    sectionTitle("Background colour")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        BackgroundColors.forEach { c ->
-                            ColorDot(c, selected = bgColor == c) { bgColor = c }
-                        }
-                    }
-                }
-
                 Spacer(modifier = Modifier.height(10.dp))
-                sectionTitle("Position")
+                DialogTitle("Position")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("Top" to 0.08f, "Middle" to 0.45f, "Bottom" to 0.8f).forEach { (label, y) ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (yFrac == y) Color(0xFFFF5238) else Color(0xFF222230))
-                                .clickable { yFrac = y }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(label, color = Color.White, fontSize = 11.sp)
-                        }
+                        Chip(label, selected = yFrac == y, color = Color(0xFFFF5238)) { yFrac = y }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                sectionTitle("Animation")
+                DialogTitle("Animation")
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     TextAnimations.forEach { (key, label) ->
-                        Box(
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (anim == key) Color(0xFF7C4DFF) else Color(0xFF222230))
-                                .clickable { anim = key }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(label, color = Color.White, fontSize = 11.sp)
-                        }
+                        Chip(label, selected = anim == key, color = Color(0xFF7C4DFF)) { anim = key }
                     }
                 }
 
@@ -566,8 +634,18 @@ fun TextEditorDialog(
                     )
                 )
 
+                if (initial != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(onClick = {
+                        TextTrack.splitById(initial.id, TimelineModel.playheadMs.value)
+                        onDismiss()
+                    }) {
+                        Text("Cut at playhead", fontSize = 12.sp)
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Preview", color = Color(0xFFA0A0B2), fontSize = 11.sp)
+                DialogTitle("Preview")
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -643,6 +721,26 @@ fun TextEditorDialog(
             }
         }
     )
+}
+
+@Composable
+private fun DialogTitle(label: String) {
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+}
+
+@Composable
+private fun Chip(label: String, selected: Boolean, color: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .padding(end = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) color else Color(0xFF222230))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Text(label, color = Color.White, fontSize = 11.sp)
+    }
 }
 
 @Composable
