@@ -64,9 +64,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Clip speed and volume, text overlays (colour, outline, background, font, size, position, timing and
- * animation) and sticker/image overlays are all burned into the video. Overlapping audio clips are placed
- * in separate sequences, so Media3 mixes them. Must be started from the main thread.
+ * Clip speed and volume, the colour adjustment (brightness, contrast, saturation, filter), text overlays
+ * and sticker/image overlays are all burned into the video. Overlapping audio clips are placed in
+ * separate sequences, so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -222,6 +222,7 @@ class TimelineExporter(private val context: Context) {
         val texts = TextTrack.texts.value
         val stickers = StickerTrack.stickers.value
         val previewWidthDp = TextPreviewMetrics.widthDp
+        val colour = VideoAdjustStore.adjust.value
         val (frameW, frameH) = frameSize(sources, options.aspectRatio)
         val bitmapCache = HashMap<String, Bitmap>()
         val videoItems = buildPieces(segments, texts, stickers, totalMs).map { p ->
@@ -240,6 +241,8 @@ class TimelineExporter(private val context: Context) {
                 effects.add(SpeedChangeEffect(p.seg.speed))
             }
             effects.addAll(buildVideoEffects(options))
+            // colour adjustment and filter (brightness, contrast, saturation)
+            effects.addAll(adjustEffects(colour))
 
             val overlays = mutableListOf<TextureOverlay>()
             for (t in texts) {
