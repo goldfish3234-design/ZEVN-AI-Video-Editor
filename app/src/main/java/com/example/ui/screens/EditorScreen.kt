@@ -40,6 +40,7 @@ import com.example.ui.components.MusicTrackView
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
 import com.example.ui.media.ActiveTrack
+import com.example.ui.media.ColorPreview
 import com.example.ui.media.ExportOptions
 import com.example.ui.media.MediaProbe
 import com.example.ui.media.ProjectState
@@ -49,6 +50,7 @@ import com.example.ui.media.TimelineModel
 import com.example.ui.media.VideoAdjustPanel
 import com.example.ui.media.VideoAdjustStore
 import com.example.ui.sticker.StickerLayer
+import com.example.ui.sticker.StickerLibraryDialog
 import com.example.ui.sticker.StickerStore
 import com.example.ui.sticker.StickerTrack
 import com.example.ui.sticker.StickerTrackBar
@@ -113,8 +115,9 @@ fun EditorScreen(
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
     // The sticker size bar only appears after the Size tool is pressed
     var showStickerSize by rememberSaveable { mutableStateOf(false) }
-    // The adjust panel (filters, brightness, contrast, saturation) appears after the Adjust tool is pressed
+    // The adjust panel (filters, effects, sliders) and its live preview appear after the Adjust tool is pressed
     var showAdjust by rememberSaveable { mutableStateOf(false) }
+    var showStickerLibrary by remember { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
     val timelineScroll = rememberScrollState()
@@ -127,7 +130,7 @@ fun EditorScreen(
         if (selectedSticker >= 0) TextTrack.select(-1)
     }
 
-    // Open the current project once: timeline (if empty), text, stickers and colour adjust
+    // Open the current project once: timeline (if empty), text, stickers and colour settings
     LaunchedEffect(Unit) {
         val saved = withContext(Dispatchers.IO) { ProjectStore.loadCurrent(context) }
         if (TimelineModel.sources.value.isEmpty() && saved != null) {
@@ -223,7 +226,7 @@ fun EditorScreen(
         musicPicker.launch(arrayOf("audio/*"))
     }
 
-    // Image / sticker: copied into the project folder, then placed on the preview at the playhead
+    // Image from the phone: copied into the project folder, then placed on the preview at the playhead
     val stickerPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -383,6 +386,16 @@ fun EditorScreen(
 
                     if (hasVideo) {
                         VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
+                        // While the Adjust panel is open, the frame under the playhead shows the colours live
+                        if (showAdjust && videoTools) {
+                            ColorPreview(
+                                sources = sources,
+                                segments = segments,
+                                playheadMs = playhead,
+                                adjust = adjust,
+                                modifier = mediaModifier
+                            )
+                        }
                     } else {
                         Image(
                             painter = painterResource(id = R.drawable.zevn_fashion_hero),
@@ -736,7 +749,7 @@ fun EditorScreen(
             VideoAdjustPanel(modifier = Modifier.padding(bottom = 4.dp))
         }
 
-        // Add audio, text and image/sticker
+        // Add audio, text and sticker
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -757,7 +770,7 @@ fun EditorScreen(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Text", fontSize = 12.sp)
             }
-            OutlinedButton(onClick = launchStickerPicker, enabled = hasVideo) {
+            OutlinedButton(onClick = { showStickerLibrary = true }, enabled = hasVideo) {
                 Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Sticker", fontSize = 12.sp)
@@ -972,6 +985,21 @@ fun EditorScreen(
                 }
             }
         }
+    }
+
+    // --- STICKER LIBRARY (built-in stickers, or import from the phone) ---
+    if (showStickerLibrary) {
+        StickerLibraryDialog(
+            onPick = { uri ->
+                StickerTrack.add(uri, TimelineModel.playheadMs.value, STICKER_MS)
+                showStickerLibrary = false
+            },
+            onImport = {
+                showStickerLibrary = false
+                launchStickerPicker()
+            },
+            onDismiss = { showStickerLibrary = false }
+        )
     }
 
     // --- TEXT EDITOR ---
