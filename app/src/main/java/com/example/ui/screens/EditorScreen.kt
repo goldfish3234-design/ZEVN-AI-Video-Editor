@@ -46,6 +46,8 @@ import com.example.ui.media.ProjectState
 import com.example.ui.media.ProjectStore
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
+import com.example.ui.media.VideoAdjustPanel
+import com.example.ui.media.VideoAdjustStore
 import com.example.ui.sticker.StickerLayer
 import com.example.ui.sticker.StickerStore
 import com.example.ui.sticker.StickerTrack
@@ -95,6 +97,7 @@ fun EditorScreen(
     val selectedText by TextTrack.selectedText.collectAsState()
     val stickers by StickerTrack.stickers.collectAsState()
     val selectedSticker by StickerTrack.selectedSticker.collectAsState()
+    val adjust by VideoAdjustStore.adjust.collectAsState()
 
     val currentProj = project ?: return
 
@@ -110,6 +113,8 @@ fun EditorScreen(
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
     // The sticker size bar only appears after the Size tool is pressed
     var showStickerSize by rememberSaveable { mutableStateOf(false) }
+    // The adjust panel (filters, brightness, contrast, saturation) appears after the Adjust tool is pressed
+    var showAdjust by rememberSaveable { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
     val timelineScroll = rememberScrollState()
@@ -122,7 +127,7 @@ fun EditorScreen(
         if (selectedSticker >= 0) TextTrack.select(-1)
     }
 
-    // Open the current project once: timeline (if empty), text overlays and stickers
+    // Open the current project once: timeline (if empty), text, stickers and colour adjust
     LaunchedEffect(Unit) {
         val saved = withContext(Dispatchers.IO) { ProjectStore.loadCurrent(context) }
         if (TimelineModel.sources.value.isEmpty() && saved != null) {
@@ -131,17 +136,19 @@ fun EditorScreen(
         if (saved != null) TextTrack.restore(saved.texts)
         val savedStickers = withContext(Dispatchers.IO) { StickerStore.load(context) }
         StickerTrack.restore(savedStickers)
+        withContext(Dispatchers.IO) { VideoAdjustStore.load(context) }
         loaded = true
     }
 
     // Auto-save shortly after every change
-    LaunchedEffect(sources, segments, audioClips, texts, stickers, loaded) {
+    LaunchedEffect(sources, segments, audioClips, texts, stickers, adjust, loaded) {
         if (loaded) {
             delay(500L)
             val state = ProjectState(ProjectStore.currentName, sources, segments, audioClips, texts)
             withContext(Dispatchers.IO) {
                 ProjectStore.save(context, state)
                 StickerStore.save(context, stickers)
+                VideoAdjustStore.save(context)
             }
         }
     }
@@ -163,6 +170,7 @@ fun EditorScreen(
                     )
                 )
                 StickerStore.save(context, StickerTrack.stickers.value)
+                VideoAdjustStore.save(context)
             }
         }
     }
@@ -723,6 +731,11 @@ fun EditorScreen(
             }
         }
 
+        // --- VIDEO ADJUST PANEL (only after the Adjust tool is pressed) ---
+        if (showAdjust && hasVideo && videoTools) {
+            VideoAdjustPanel(modifier = Modifier.padding(bottom = 4.dp))
+        }
+
         // Add audio, text and image/sticker
         Row(
             modifier = Modifier
@@ -897,6 +910,11 @@ fun EditorScreen(
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                item {
+                    ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
+                        showAdjust = !showAdjust
+                    }
+                }
                 item {
                     ToolButton("Speed", Icons.Default.Speed, enabled = hasSelection && videoTools) {
                         showSpeedBar = !showSpeedBar
