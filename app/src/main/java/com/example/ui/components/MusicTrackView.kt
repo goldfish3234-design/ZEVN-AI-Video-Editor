@@ -22,7 +22,7 @@ private const val HANDLE_PX = 48f
  * Audio track: each audio clip is a block at its offset.
  * - Tap a clip to select it.
  * - Drag the middle of a clip to move it; drag its left or right edge to trim.
- * [modifier] should set the width (it follows the timeline zoom).
+ * [modifier] should set the width (it follows the timeline zoom). The track is 30 dp tall.
  */
 @Composable
 fun MusicTrackView(
@@ -39,7 +39,7 @@ fun MusicTrackView(
 
     BoxWithConstraints(
         modifier = modifier
-            .height(40.dp)
+            .height(30.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF14141C))
     ) {
@@ -55,7 +55,7 @@ fun MusicTrackView(
                     .offset(x = trackWidth * startFrac)
                     .width(maxOf(trackWidth * lenFrac, 6.dp))
                     .fillMaxHeight()
-                    .padding(vertical = 4.dp)
+                    .padding(vertical = 3.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(color)
                     .pointerInput(i, total) {
@@ -91,7 +91,7 @@ fun MusicTrackView(
             ) {
                 Text(
                     text = "Audio ${clip.lengthMs / 1000}s",
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
