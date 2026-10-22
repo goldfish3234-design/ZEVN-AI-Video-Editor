@@ -1,19 +1,14 @@
 package com.example.ui.screens
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -22,24 +17,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.AspectRatioType
-import com.example.data.model.FilterPreset
-import com.example.service.AudioRecorderManager
-import com.example.ui.components.WaveformVisualizer
 import com.example.ui.media.ProjectStore
 import com.example.ui.media.ProjectSummary
 import com.example.ui.media.TimelineModel
@@ -60,15 +50,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val isTranscribing by viewModel.isTranscribing.collectAsState()
-    val isRecordingAudio by viewModel.isRecordingAudio.collectAsState()
-    val transcribedText by viewModel.transcribedText.collectAsState()
-    val isGeneratingVeo by viewModel.isGeneratingVeo.collectAsState()
-    val veoStatus by viewModel.veoStatus.collectAsState()
 
     var showNewProjectDialog by remember { mutableStateOf(false) }
-    var showTranscribeDialog by remember { mutableStateOf(false) }
-    var showVeoDialog by remember { mutableStateOf(false) }
     var draftsVersion by remember { mutableIntStateOf(0) }
     val drafts = remember(draftsVersion) { ProjectStore.list(context) }
 
@@ -96,25 +79,27 @@ fun HomeScreen(
         }
     }
 
-    // Audio recorder manager
-    val audioRecorder = remember { AudioRecorderManager(context) }
-
-    // Microphone permission launcher
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            val started = audioRecorder.startRecording()
-            if (started) {
-                viewModel.setRecordingAudioState(true)
-            } else {
-                Toast.makeText(context, "Microphone initialized in simulation mode", Toast.LENGTH_SHORT).show()
-                viewModel.setRecordingAudioState(true)
+    // Tech picture card: the user's own picture (stored in app storage), or the drawn one
+    var techVersion by remember { mutableIntStateOf(0) }
+    val techFile = remember(techVersion) { File(context.filesDir, "tech_image.jpg").takeIf { it.exists() } }
+    val techPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException("Cannot read the picture")
+                        input.use { src ->
+                            File(context.filesDir, "tech_image.jpg").outputStream().use { out -> src.copyTo(out) }
+                        }
+                    }
+                    techVersion++
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Picture could not be set: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
-        } else {
-            Toast.makeText(context, "Microphone permission required for speech transcription", Toast.LENGTH_SHORT).show()
-            // Still allow simulated recording for testing
-            viewModel.setRecordingAudioState(true)
         }
     }
 
@@ -135,7 +120,6 @@ fun HomeScreen(
                     .background(Color(0xFF16161F))
                     .clickable { onNavigateToEditor() }
             ) {
-                // Your own picture if you set one, otherwise the built-in picture
                 if (heroFile != null) {
                     AsyncImage(
                         model = heroFile,
@@ -152,7 +136,6 @@ fun HomeScreen(
                     )
                 }
 
-                // Dark Bottom Gradient Overlay
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -181,7 +164,6 @@ fun HomeScreen(
                     Text("Change photo", color = Color.White, fontSize = 11.sp)
                 }
 
-                // Typography
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -203,13 +185,10 @@ fun HomeScreen(
                         color = Color.White,
                         lineHeight = 32.sp
                     )
-
                     Spacer(modifier = Modifier.height(6.dp))
-
                     Text(
                         text = "What would you like to create today?",
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.Normal,
                         color = Color(0xFFA0A0B2)
                     )
                 }
@@ -221,7 +200,7 @@ fun HomeScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Button(
@@ -229,8 +208,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .fillMaxWidth(0.68f)
                         .height(52.dp)
-                        .clip(RoundedCornerShape(26.dp))
-                        .testTag("home_new_project_button"),
+                        .clip(RoundedCornerShape(26.dp)),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF22222E),
                         contentColor = Color.White
@@ -260,77 +238,37 @@ fun HomeScreen(
             }
         }
 
-        // --- 3. QUICK ACTION TOOLS ---
+        // --- 3. TECH PICTURE CARD (drawn in the app; tap to use your own picture) ---
         item {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .height(190.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .border(1.dp, Color(0xFF1F3A44), RoundedCornerShape(22.dp))
+                    .clickable { techPicker.launch(arrayOf("image/*")) }
             ) {
-                // Row 1: AI Videos, AutoCut, Transcribe
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    CircularToolButton(
-                        label = "AI Videos",
-                        icon = Icons.Default.Videocam,
-                        iconTint = Color(0xFF6C63FF),
-                        onClick = { showVeoDialog = true }
+                if (techFile != null) {
+                    AsyncImage(
+                        model = techFile,
+                        contentDescription = "Tech picture",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
-                    CircularToolButton(
-                        label = "AutoCut",
-                        icon = Icons.Default.ContentCut,
-                        iconTint = Color(0xFFFF5238),
-                        onClick = {
-                            viewModel.applyAiAutoEdit()
-                            Toast.makeText(context, "AutoCut applied to video timeline!", Toast.LENGTH_SHORT).show()
-                            onNavigateToEditor()
-                        }
-                    )
-                    CircularToolButton(
-                        label = "Transcribe",
-                        icon = Icons.Default.Mic,
-                        iconTint = Color(0xFF00FF9D),
-                        onClick = { showTranscribeDialog = true }
-                    )
+                } else {
+                    TechPicture(modifier = Modifier.fillMaxSize())
                 }
 
-                // Row 2: AI Upscaler, Remove BG, AI Captions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
-                    CircularToolButton(
-                        label = "AI Upscaler",
-                        icon = Icons.Default.HighQuality,
-                        iconTint = Color(0xFF00AEEF),
-                        onClick = {
-                            viewModel.updateFilter(FilterPreset.CYBERPUNK)
-                            Toast.makeText(context, "AI 4K Upscaler profile activated", Toast.LENGTH_SHORT).show()
-                            onNavigateToEditor()
-                        }
-                    )
-                    CircularToolButton(
-                        label = "Remove BG",
-                        icon = Icons.Default.AutoFixNormal,
-                        iconTint = Color(0xFFFF2A85),
-                        onClick = {
-                            Toast.makeText(context, "AI Background Cutout enabled", Toast.LENGTH_SHORT).show()
-                            onNavigateToEditor()
-                        }
-                    )
-                    CircularToolButton(
-                        label = "AI Captions",
-                        icon = Icons.Default.Subtitles,
-                        iconTint = Color(0xFFFFB800),
-                        onClick = {
-                            viewModel.generateCaptionsWithAi("New in Fashion editorial")
-                            Toast.makeText(context, "AI Captions generated on timeline", Toast.LENGTH_SHORT).show()
-                            onNavigateToEditor()
-                        }
-                    )
+                    Text("Tap to use your own picture", color = Color.White, fontSize = 11.sp)
                 }
             }
         }
@@ -354,254 +292,6 @@ fun HomeScreen(
                 }
             )
         }
-    }
-
-    // --- DIALOG: MICROPHONE TRANSCRIBE ---
-    if (showTranscribeDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                if (isRecordingAudio) {
-                    audioRecorder.stopRecording()
-                    viewModel.setRecordingAudioState(false)
-                }
-                showTranscribeDialog = false
-            },
-            containerColor = Color(0xFF161622),
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Mic, contentDescription = null, tint = Color(0xFF00FF9D))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Microphone Audio Transcription", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
-            },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "Powered by Google Gemini model gemini-3.5-transcribe. Speak into your microphone to transcribe speech directly into video subtitles.",
-                        fontSize = 12.sp,
-                        color = Color(0xFFA0A0B2),
-                        lineHeight = 16.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    // Microphone Record Button
-                    Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(if (isRecordingAudio) Color(0xFFFF3B30) else Color(0xFF262636))
-                            .clickable {
-                                if (isRecordingAudio) {
-                                    // Stop recording and transcribe
-                                    val audioBytes = audioRecorder.stopRecording() ?: "Sample voice stream".toByteArray()
-                                    viewModel.setRecordingAudioState(false)
-                                    viewModel.transcribeAudioInput(audioBytes)
-                                } else {
-                                    // Request permission & start
-                                    val hasPermission = ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (hasPermission) {
-                                        audioRecorder.startRecording()
-                                        viewModel.setRecordingAudioState(true)
-                                    } else {
-                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (isRecordingAudio) Icons.Default.Stop else Icons.Default.Mic,
-                            contentDescription = "Record",
-                            tint = Color.White,
-                            modifier = Modifier.size(34.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = if (isRecordingAudio) "Listening... Tap to stop & transcribe" else "Tap microphone to record voice",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isRecordingAudio) Color(0xFFFF5238) else Color.White
-                    )
-
-                    if (isRecordingAudio) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        WaveformVisualizer(isPlaying = true, color = Color(0xFF00FF9D), modifier = Modifier.width(140.dp))
-                    }
-
-                    if (isTranscribing) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        CircularProgressIndicator(color = Color(0xFF00AEEF), modifier = Modifier.size(28.dp))
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("Transcribing with gemini-3.5-transcribe...", fontSize = 11.sp, color = Color(0xFF00AEEF))
-                    }
-
-                    if (transcribedText.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF0F1E28))
-                                .border(1.dp, Color(0xFF00AEEF), RoundedCornerShape(10.dp))
-                                .padding(10.dp)
-                        ) {
-                            Column {
-                                Text("Transcribed Text:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00AEEF))
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(transcribedText, fontSize = 12.sp, color = Color.White)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (transcribedText.isNotBlank()) {
-                    Button(
-                        onClick = {
-                            showTranscribeDialog = false
-                            onNavigateToEditor()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00AEEF))
-                    ) {
-                        Text("Apply to Editor", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                } else {
-                    TextButton(onClick = { showTranscribeDialog = false }) {
-                        Text("Close", color = Color(0xFFA0A0B2))
-                    }
-                }
-            }
-        )
-    }
-
-    // --- DIALOG: VEO VIDEO GENERATION ---
-    if (showVeoDialog) {
-        var promptText by remember { mutableStateOf("Cinematic runway model, dramatic red and amber lighting, high fashion 4K") }
-        var selectedRatio by remember { mutableStateOf("9:16") }
-
-        AlertDialog(
-            onDismissRequest = { showVeoDialog = false },
-            containerColor = Color(0xFF161622),
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Color(0xFF6C63FF))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Animate Image with Veo", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "Generate video using model veo-3.1-fast-generate-preview with 16:9 or 9:16 aspect ratio.",
-                        fontSize = 12.sp,
-                        color = Color(0xFFA0A0B2),
-                        lineHeight = 16.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Selected Photo preview
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(130.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.zevn_home_hero),
-                            contentDescription = "Source Photo",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(6.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color.Black.copy(alpha = 0.8f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Text("Source Photo", fontSize = 9.sp, color = Color.White)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text("Target Aspect Ratio", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        listOf("9:16" to "9:16 (Portrait)", "16:9" to "16:9 (Landscape)").forEach { (ratio, label) ->
-                            val isSelected = selectedRatio == ratio
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isSelected) Color(0xFF6C63FF) else Color(0xFF222230))
-                                    .clickable { selectedRatio = ratio }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = label,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = promptText,
-                        onValueChange = { promptText = it },
-                        label = { Text("Veo Motion Prompt") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF6C63FF)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    if (isGeneratingVeo) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        CircularProgressIndicator(color = Color(0xFF6C63FF), modifier = Modifier.size(24.dp))
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(veoStatus, fontSize = 11.sp, color = Color(0xFF6C63FF))
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.animatePhotoWithVeo(promptText, selectedRatio)
-                        showVeoDialog = false
-                        onNavigateToEditor()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6C63FF)),
-                    enabled = !isGeneratingVeo
-                ) {
-                    Text("Generate with Veo", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showVeoDialog = false }) {
-                    Text("Cancel", color = Color(0xFFA0A0B2))
-                }
-            }
-        )
     }
 
     // --- DIALOG: NEW PROJECT ---
@@ -630,7 +320,6 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(14.dp))
                     Text("Aspect Ratio (social media)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(6.dp))
-                    // All ratios, three per row
                     AspectRatioType.values().toList().chunked(3).forEach { row ->
                         Row(
                             modifier = Modifier
@@ -654,11 +343,10 @@ fun HomeScreen(
                                         color = Color.White,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        textAlign = TextAlign.Center
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                     )
                                 }
                             }
-                            // keep the last row's boxes the same width
                             repeat(3 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
                         }
                     }
@@ -684,6 +372,66 @@ fun HomeScreen(
                 }
             }
         )
+    }
+}
+
+/**
+ * A high quality tech picture drawn in the app: dark gradient, neon grid and circuit traces.
+ * It is sharp at any size because it is drawn, not a photo.
+ */
+@Composable
+fun TechPicture(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.background(
+            Brush.linearGradient(
+                colors = listOf(Color(0xFF05070D), Color(0xFF0B2530), Color(0xFF071018))
+            )
+        )
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val grid = 36.dp.toPx()
+            val gridColor = Color(0x2600E5FF)
+            var x = 0f
+            while (x <= size.width) {
+                drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
+                x += grid
+            }
+            var y = 0f
+            while (y <= size.height) {
+                drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
+                y += grid
+            }
+
+            val neon = Color(0xFF00E5FF)
+            val violet = Color(0xFF7C4DFF)
+            val w = size.width
+            val h = size.height
+
+            // circuit traces
+            val traces = listOf(
+                Offset(w * 0.08f, h * 0.78f) to Offset(w * 0.42f, h * 0.78f),
+                Offset(w * 0.42f, h * 0.78f) to Offset(w * 0.42f, h * 0.52f),
+                Offset(w * 0.42f, h * 0.52f) to Offset(w * 0.72f, h * 0.52f),
+                Offset(w * 0.72f, h * 0.52f) to Offset(w * 0.72f, h * 0.2f),
+                Offset(w * 0.55f, h * 0.9f) to Offset(w * 0.92f, h * 0.9f)
+            )
+            for ((a, b) in traces) {
+                drawLine(neon, a, b, strokeWidth = 3f)
+            }
+            for (node in listOf(
+                Offset(w * 0.42f, h * 0.78f),
+                Offset(w * 0.42f, h * 0.52f),
+                Offset(w * 0.72f, h * 0.52f),
+                Offset(w * 0.72f, h * 0.2f)
+            )) {
+                drawCircle(Color(0xFF05070D), radius = 7f, center = node)
+                drawCircle(neon, radius = 7f, center = node, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+            }
+
+            // glowing accent
+            drawCircle(violet.copy(alpha = 0.35f), radius = w * 0.35f, center = Offset(w * 0.85f, h * 0.15f))
+            drawCircle(neon.copy(alpha = 0.25f), radius = w * 0.22f, center = Offset(w * 0.12f, h * 0.2f))
+        }
     }
 }
 
@@ -753,43 +501,5 @@ private fun DraftsSection(
                 }
             }
         }
-    }
-}
-
-@Composable
-fun CircularToolButton(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    iconTint: Color,
-    onClick: () -> Unit
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clickable { onClick() }
-            .padding(6.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(54.dp)
-                .clip(CircleShape)
-                .background(Color(0xFF1E1E28)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = iconTint,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            color = Color(0xFFD4D4DE),
-            textAlign = TextAlign.Center
-        )
     }
 }
