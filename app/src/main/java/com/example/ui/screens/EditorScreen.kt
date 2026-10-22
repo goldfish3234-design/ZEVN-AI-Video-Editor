@@ -36,11 +36,13 @@ import com.example.ui.components.MusicTrackView
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
 import com.example.ui.media.ActiveTrack
+import com.example.ui.media.AutoCut
 import com.example.ui.media.ColorPreview
 import com.example.ui.media.ExportOptions
 import com.example.ui.media.MediaProbe
 import com.example.ui.media.ProjectState
 import com.example.ui.media.ProjectStore
+import com.example.ui.media.SilenceRange
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
 import com.example.ui.media.VideoAdjustPanel
@@ -104,6 +106,7 @@ fun EditorScreen(
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableIntStateOf(0) }
     var extracting by remember { mutableStateOf(false) }
+    var autoCutBusy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
     // The volume bar only appears after the Volume tool is pressed
@@ -289,6 +292,41 @@ fun EditorScreen(
                     Toast.makeText(context, "Extract failed: $message", Toast.LENGTH_SHORT).show()
                 }
             )
+        }
+    }
+
+    // AutoCut: finds the quiet parts of every video clip and cuts them out (undo brings them back)
+    val runAutoCut: () -> Unit = {
+        if (segments.isNotEmpty() && !autoCutBusy) {
+            autoCutBusy = true
+            Toast.makeText(context, "AutoCut চলছে...", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                val before = TimelineModel.totalDurationMs
+                val result = withContext(Dispatchers.IO) {
+                    val segs = TimelineModel.segments.value
+                    val srcs = TimelineModel.sources.value
+                    val map = HashMap<Int, List<SilenceRange>>()
+                    for (i in segs.indices) {
+                        val s = segs[i]
+                        val src = srcs.getOrNull(s.source) ?: continue
+                        map[i] = AutoCut.findSilence(context, src.uri, s.startMs, s.endMs)
+                    }
+                    AutoCut.cutSegments(segs, map)
+                }
+                autoCutBusy = false
+                val after = result.sumOf { it.durationMs }
+                if (after >= before - 50L) {
+                    Toast.makeText(context, "কোনো নীরব অংশ পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
+                } else {
+                    TimelineModel.applyAutoCut(result)
+                    val removedSec = (before - after) / 1000.0
+                    Toast.makeText(
+                        context,
+                        "AutoCut: %.1f সেকেন্ড নীরব অংশ বাদ দেওয়া হয়েছে".format(removedSec),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 
@@ -937,6 +975,11 @@ fun EditorScreen(
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                item {
+                    ToolButton("AutoCut", Icons.Default.AutoAwesome, enabled = hasVideo && videoTools && !autoCutBusy) {
+                        runAutoCut()
+                    }
+                }
                 item {
                     ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
                         showAdjust = !showAdjust
