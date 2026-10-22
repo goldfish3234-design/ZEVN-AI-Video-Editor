@@ -135,6 +135,8 @@ dependencies {
   implementation("androidx.media3:media3-common:1.5.1")
   // ImmutableList is used by the Media3 overlay API
   implementation("com.google.guava:guava:33.3.1-android")
+  // ML Kit Selfie Segmentation: Remove BG (the model is inside the library)
+  implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
