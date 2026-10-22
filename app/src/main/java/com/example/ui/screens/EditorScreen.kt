@@ -4,7 +4,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,13 +28,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.R
 import com.example.ui.components.MusicTrackView
 import com.example.ui.components.TimelineView
 import com.example.ui.components.VideoPreview
@@ -402,19 +398,13 @@ fun EditorScreen(
                             )
                         }
                     } else {
-                        Image(
-                            painter = painterResource(id = R.drawable.zevn_fashion_hero),
-                            contentDescription = "Preview placeholder",
-                            modifier = mediaModifier,
-                            contentScale = ContentScale.Crop
-                        )
+                        // No video yet: an empty black frame with an import button (no default picture)
                         Button(
                             onClick = launchVideoPicker,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 16.dp)
+                                .align(Alignment.Center)
                         ) {
                             Icon(Icons.Default.VideoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
