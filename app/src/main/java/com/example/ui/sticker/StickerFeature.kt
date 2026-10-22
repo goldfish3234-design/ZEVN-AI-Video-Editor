@@ -33,7 +33,8 @@ private const val EDGE_PX = 48f
 /**
  * An image or sticker placed over the video.
  * Position is a fraction of the preview (0..1). [sizeFrac] is the width as a fraction of the preview width.
- * [uri] is a file:// address of a copy kept in the project folder (PNG with transparency works best).
+ * [uri] is a file:// address of a picture (PNG with transparency works best).
+ * If [frames] is not empty, this is an animated cut-out: the frames play one after another at [fps].
  */
 data class StickerClip(
     val id: Long,
@@ -42,7 +43,9 @@ data class StickerClip(
     val durationMs: Long,
     val xFrac: Float,
     val yFrac: Float,
-    val sizeFrac: Float
+    val sizeFrac: Float,
+    val frames: List<String> = emptyList(),
+    val fps: Float = 10f
 )
 
 /** The sticker track: the list of stickers and which one is selected. */
@@ -63,7 +66,7 @@ object StickerTrack {
 
     fun newId(): Long = nextId++
 
-    /** Adds a sticker at [startMs] (timeline ms) and selects it. */
+    /** Adds a picture sticker at [startMs] (timeline ms) and selects it. */
     fun add(uri: String, startMs: Long, durationMs: Long) {
         val clip = StickerClip(
             id = newId(),
@@ -76,6 +79,32 @@ object StickerTrack {
         )
         _stickers.value = _stickers.value + clip
         _selected.value = _stickers.value.lastIndex
+    }
+
+    /** Adds an animated cut-out (a list of frames) at [startMs] and selects it. */
+    fun addAnimated(frames: List<String>, fps: Float, startMs: Long) {
+        if (frames.isEmpty()) return
+        val clip = StickerClip(
+            id = newId(),
+            uri = frames.first(),
+            startMs = startMs.coerceAtLeast(0L),
+            durationMs = (frames.size * 1000f / fps).toLong(),
+            xFrac = 0.3f,
+            yFrac = 0.3f,
+            sizeFrac = 0.4f,
+            frames = frames,
+            fps = fps
+        )
+        _stickers.value = _stickers.value + clip
+        _selected.value = _stickers.value.lastIndex
+    }
+
+    /** The picture to show for [s] at timeline time [timeMs]. Animated cut-outs loop. */
+    fun frameUriAt(s: StickerClip, timeMs: Long): String {
+        if (s.frames.isEmpty()) return s.uri
+        val elapsed = (timeMs - s.startMs).coerceAtLeast(0L)
+        val index = ((elapsed * s.fps) / 1000f).toInt() % s.frames.size
+        return s.frames[index]
     }
 
     fun replace(index: Int, clip: StickerClip) {
@@ -151,6 +180,8 @@ object StickerStore {
     fun save(context: Context, list: List<StickerClip>) {
         val arr = JSONArray()
         for (s in list) {
+            val framesArr = JSONArray()
+            for (f in s.frames) framesArr.put(f)
             arr.put(
                 JSONObject()
                     .put("id", s.id)
@@ -160,6 +191,8 @@ object StickerStore {
                     .put("xFrac", s.xFrac.toDouble())
                     .put("yFrac", s.yFrac.toDouble())
                     .put("sizeFrac", s.sizeFrac.toDouble())
+                    .put("frames", framesArr)
+                    .put("fps", s.fps.toDouble())
             )
         }
         File(ProjectStore.currentMediaDir(context), "stickers.json").writeText(arr.toString())
@@ -173,6 +206,11 @@ object StickerStore {
             val out = mutableListOf<StickerClip>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
+                val framesArr = o.optJSONArray("frames")
+                val frames = mutableListOf<String>()
+                if (framesArr != null) {
+                    for (k in 0 until framesArr.length()) frames.add(framesArr.getString(k))
+                }
                 out.add(
                     StickerClip(
                         id = o.getLong("id"),
@@ -181,7 +219,9 @@ object StickerStore {
                         durationMs = o.getLong("durationMs"),
                         xFrac = o.optDouble("xFrac", 0.3).toFloat(),
                         yFrac = o.optDouble("yFrac", 0.3).toFloat(),
-                        sizeFrac = o.optDouble("sizeFrac", 0.3).toFloat()
+                        sizeFrac = o.optDouble("sizeFrac", 0.3).toFloat(),
+                        frames = frames,
+                        fps = o.optDouble("fps", 10.0).toFloat()
                     )
                 )
             }
@@ -236,7 +276,7 @@ fun StickerLayer(
                         }
                 ) {
                     AsyncImage(
-                        model = s.uri,
+                        model = StickerTrack.frameUriAt(s, playheadMs),
                         contentDescription = "Sticker",
                         contentScale = ContentScale.FillWidth,
                         modifier = Modifier.fillMaxWidth()
@@ -259,7 +299,7 @@ fun StickerTrackBar(
     val total = if (totalMs <= 0L) 1L else totalMs
     BoxWithConstraints(
         modifier = modifier
-            .height(40.dp)
+            .height(30.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF14141C))
     ) {
@@ -273,7 +313,7 @@ fun StickerTrackBar(
                     .offset(x = trackWidth * startFrac)
                     .width(maxOf(trackWidth * lenFrac, 6.dp))
                     .fillMaxHeight()
-                    .padding(vertical = 4.dp)
+                    .padding(vertical = 3.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(color)
                     .pointerInput(i, total) {
@@ -308,8 +348,8 @@ fun StickerTrackBar(
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = "Sticker ${i + 1}",
-                    fontSize = 10.sp,
+                    text = if (s.frames.isNotEmpty()) "Cut-out ${i + 1}" else "Sticker ${i + 1}",
+                    fontSize = 9.sp,
                     color = Color.Black,
                     maxLines = 1,
                     modifier = Modifier.padding(horizontal = 12.dp)
