@@ -6,16 +6,16 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.segmentation.Segmentation
-import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteOrder
 
 /**
- * Remove BG: separates the person from the background of a photo with ML Kit Selfie Segmentation
- * (the model is inside the library, no file to download). The result is a PNG with a transparent
- * background, which is used as a sticker. Call from a background thread.
+ * Remove BG for any subject (a person, an object, a product...). Uses ML Kit Subject Segmentation.
+ * The model is downloaded by Google Play services, so no model file is needed in the project.
+ * The result is a PNG with a transparent background, used as a sticker.
+ * Call from a background thread.
  */
 object BackgroundRemover {
 
@@ -43,38 +43,24 @@ object BackgroundRemover {
         return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
     }
 
-    /** Returns a copy of [src] where the background pixels are transparent. */
+    /**
+     * Returns a copy of [src] with the background made transparent, or null if the model is not
+     * available or the segmentation fails (for example when there is no internet on the first use).
+     */
     fun removeFromBitmap(src: Bitmap): Bitmap? {
-        val options = SelfieSegmenterOptions.Builder()
-            .setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE)
-            .enableRawSizeMask()
+        val options = SubjectSegmenterOptions.Builder()
+            .enableForegroundBitmap()
             .build()
-        val segmenter = Segmentation.getClient(options)
+        val segmenter = SubjectSegmentation.getClient(options)
         try {
-            val mask = Tasks.await(segmenter.process(InputImage.fromBitmap(src, 0)))
-            val mw = mask.width
-            val mh = mask.height
-            if (mw <= 0 || mh <= 0) return null
-            // the mask holds one confidence value (0..1, 1 = person) per mask pixel, as floats
-            val floats = mask.buffer.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
-
-            val w = src.width
-            val h = src.height
-            val pixels = IntArray(w * h)
-            src.getPixels(pixels, 0, w, 0, 0, w, h)
-            for (y in 0 until h) {
-                val my = (y * mh / h).coerceIn(0, mh - 1)
-                for (x in 0 until w) {
-                    val mx = (x * mw / w).coerceIn(0, mw - 1)
-                    val conf = floats.get(my * mw + mx).coerceIn(0f, 1f)
-                    val i = y * w + x
-                    val alpha = (conf * 255f).toInt()
-                    pixels[i] = (pixels[i] and 0x00FFFFFF) or (alpha shl 24)
-                }
+            val result = Tasks.await(segmenter.process(InputImage.fromBitmap(src, 0)))
+            val fg = result.foregroundBitmap ?: return null
+            val sized = if (fg.width == src.width && fg.height == src.height) {
+                fg
+            } else {
+                Bitmap.createScaledBitmap(fg, src.width, src.height, true)
             }
-            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            out.setPixels(pixels, 0, w, 0, 0, w, h)
-            return out
+            return sized.copy(Bitmap.Config.ARGB_8888, false)
         } catch (e: Exception) {
             return null
         } finally {
