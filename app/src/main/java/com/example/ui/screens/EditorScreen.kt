@@ -116,8 +116,7 @@ fun EditorScreen(
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
     // The sticker size bar only appears after the Size tool is pressed
     var showStickerSize by rememberSaveable { mutableStateOf(false) }
-    // Colour adjust and colour effects are separate panels; only one is open at a time,
-    // so the video preview above always keeps its space.
+    // Colour adjust and colour effects are separate panels; only one is open at a time
     var showAdjust by rememberSaveable { mutableStateOf(false) }
     var showEffects by rememberSaveable { mutableStateOf(false) }
     var showStickerLibrary by remember { mutableStateOf(false) }
@@ -307,6 +306,7 @@ fun EditorScreen(
     val stickerMode = !textMode && stickerSel != null
     val audioMode = !textMode && !stickerMode && activeTrack == ActiveTrack.MUSIC && audioSel != null
     val videoTools = !textMode && !stickerMode && activeTrack == ActiveTrack.VIDEO
+    // In colour mode the screen is used for the picture: the timeline is replaced by a simple scrub bar
     val colourPanelOpen = (showAdjust || showEffects) && hasVideo && videoTools
     val selectedClip = segments.getOrNull(selected)
     val scrollFrac = if (timelineScroll.maxValue > 0) {
@@ -363,17 +363,18 @@ fun EditorScreen(
             }
         }
 
-        // --- PREVIEW: the frame keeps the chosen social media shape and fits on screen ---
+        // --- PREVIEW: the largest frame with the chosen social media shape, centred in the free space ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .padding(horizontal = 14.dp, vertical = 4.dp),
-            contentAlignment = Alignment.Center
+                .padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 val ratio = currentProj.aspectRatio.ratio
-                // the largest frame with this ratio that fits in the free space
                 val frameW = minOf(maxWidth, maxHeight * ratio)
                 val frameH = frameW / ratio
                 Box(
@@ -442,7 +443,7 @@ fun EditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 6.dp),
+                .padding(horizontal = 20.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -470,6 +471,7 @@ fun EditorScreen(
                     textMode -> "Text ${selectedText + 1}"
                     stickerMode -> "Sticker ${selectedSticker + 1}"
                     audioMode -> "Audio ${selectedAudio + 1}"
+                    colourPanelOpen -> "Colour"
                     hasSelection && selectedClip != null && abs(selectedClip.speed - 1f) > 0.01f ->
                         "Clip ${selected + 1} · ${formatSpeed(selectedClip.speed)}"
                     hasSelection -> "Clip ${selected + 1}"
@@ -480,313 +482,326 @@ fun EditorScreen(
             )
         }
 
-        // --- ZOOM CONTROLS (buttons; pinch on the timeline also works) ---
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(MIN_ZOOM) }) {
-                Icon(Icons.Default.Remove, contentDescription = "Zoom out", tint = Color.White)
-            }
-            Text(text = "${"%.1f".format(zoom)}x", fontSize = 11.sp, color = Color.White)
-            IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(MAX_ZOOM) }) {
-                Icon(Icons.Default.Add, contentDescription = "Zoom in", tint = Color.White)
-            }
+        if (colourPanelOpen) {
+            // --- COLOUR MODE: a simple scrub bar, so the picture gets the space ---
             Slider(
-                value = scrollFrac,
-                onValueChange = { v -> scope.launch { timelineScroll.scrollTo((v * timelineScroll.maxValue).toInt()) } },
-                enabled = zoom > 1f,
+                value = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f,
+                onValueChange = { v -> TimelineModel.requestSeek((v * total).toLong()) },
                 colors = SliderDefaults.colors(
                     thumbColor = Color(0xFFFF5238),
                     activeTrackColor = Color(0xFFFF5238)
                 ),
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
             )
-        }
-
-        // --- TIMELINE (video + audio + text + stickers), pinch to zoom, scrolls when zoomed ---
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp)
-                .pointerInput(Unit) {
-                    // Two-finger pinch changes the zoom. One finger is left to the tracks (seek / move / trim).
-                    awaitEachGesture {
-                        awaitFirstDown(pass = PointerEventPass.Initial)
-                        var lastDistance = 0f
-                        do {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val pressed = event.changes.filter { it.pressed }
-                            if (pressed.size >= 2) {
-                                val distance = (pressed[0].position - pressed[1].position).getDistance()
-                                if (lastDistance > 0f && distance > 0f) {
-                                    val factor = distance / lastDistance
-                                    zoom = (zoom * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
-                                }
-                                lastDistance = distance
-                                event.changes.forEach { it.consume() }
-                            } else {
-                                lastDistance = 0f
-                            }
-                        } while (event.changes.any { it.pressed })
-                    }
-                }
-        ) {
-            val contentWidth = maxWidth * zoom
-            val playFrac = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
-
-            Box(modifier = Modifier.horizontalScroll(timelineScroll)) {
-                Column(modifier = Modifier.width(contentWidth)) {
-                    // The track being edited has a bright border
-                    TimelineView(
-                        segments = segments,
-                        selectedIndex = selected,
-                        playheadMs = playhead,
-                        totalMs = total,
-                        onTimeChosen = { t ->
-                            TextTrack.select(-1)
-                            StickerTrack.select(-1)
-                            TimelineModel.requestSeek(t)
-                            TimelineModel.selectAtTime(t)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                width = 2.dp,
-                                color = if (videoTools) ActiveBorder else InactiveBorder,
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                    )
-                    if (audioClips.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        MusicTrackView(
-                            clips = audioClips,
-                            totalMs = total,
-                            selectedIndex = selectedAudio,
-                            onSelect = { i ->
-                                TextTrack.select(-1)
-                                StickerTrack.select(-1)
-                                TimelineModel.selectAudio(i)
-                            },
-                            onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
-                            onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
-                            onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    width = 2.dp,
-                                    color = if (audioMode) ActiveBorder else InactiveBorder,
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                        )
-                    }
-                    if (texts.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        TextTrackBar(
-                            texts = texts,
-                            totalMs = total,
-                            selectedIndex = selectedText,
-                            onSelect = { i -> TextTrack.select(i) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    width = 2.dp,
-                                    color = if (textMode) TextBorder else InactiveBorder,
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                        )
-                    }
-                    if (stickers.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        StickerTrackBar(
-                            stickers = stickers,
-                            totalMs = total,
-                            selectedIndex = selectedSticker,
-                            onSelect = { i -> StickerTrack.select(i) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    width = 2.dp,
-                                    color = if (stickerMode) StickerBorder else InactiveBorder,
-                                    shape = RoundedCornerShape(10.dp)
-                                )
-                        )
-                    }
-                }
-
-                // One playhead line across ALL tracks, with a handle on top
-                Box(modifier = Modifier.matchParentSize()) {
-                    Box(
-                        modifier = Modifier
-                            .offset(x = contentWidth * playFrac - (3.dp / 2))
-                            .width(3.dp)
-                            .fillMaxHeight()
-                            .background(Color.White)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .offset(x = contentWidth * playFrac - 8.dp, y = (-4).dp)
-                            .size(16.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
-                    )
-                }
-            }
-        }
-
-        // --- STICKER SIZE (only after the Size tool is pressed) ---
-        if (showStickerSize && stickerMode && stickerSel != null) {
+        } else {
+            // --- ZOOM CONTROLS (buttons; pinch on the timeline also works) ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Sticker size", fontSize = 11.sp, color = Color.White)
+                IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(MIN_ZOOM) }) {
+                    Icon(Icons.Default.Remove, contentDescription = "Zoom out", tint = Color.White)
+                }
+                Text(text = "${"%.1f".format(zoom)}x", fontSize = 11.sp, color = Color.White)
+                IconButton(onClick = { zoom = (zoom + 0.5f).coerceAtMost(MAX_ZOOM) }) {
+                    Icon(Icons.Default.Add, contentDescription = "Zoom in", tint = Color.White)
+                }
                 Slider(
-                    value = stickerSel.sizeFrac,
-                    onValueChange = { StickerTrack.setSize(selectedSticker, it) },
-                    valueRange = 0.05f..1f,
+                    value = scrollFrac,
+                    onValueChange = { v -> scope.launch { timelineScroll.scrollTo((v * timelineScroll.maxValue).toInt()) } },
+                    enabled = zoom > 1f,
                     colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF7CE38B),
-                        activeTrackColor = Color(0xFF7CE38B)
+                        thumbColor = Color(0xFFFF5238),
+                        activeTrackColor = Color(0xFFFF5238)
                     ),
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                 )
-                Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
             }
-        }
 
-        // --- SPEED CHOICES (only after the Speed tool is pressed) ---
-        if (showSpeedBar && selectedClip != null && videoTools) {
-            LazyRow(
+            // --- TIMELINE (video + audio + text + stickers), pinch to zoom, scrolls when zoomed ---
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 14.dp)
+                    .pointerInput(Unit) {
+                        // Two-finger pinch changes the zoom. One finger is left to the tracks (seek / move / trim).
+                        awaitEachGesture {
+                            awaitFirstDown(pass = PointerEventPass.Initial)
+                            var lastDistance = 0f
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.size >= 2) {
+                                    val distance = (pressed[0].position - pressed[1].position).getDistance()
+                                    if (lastDistance > 0f && distance > 0f) {
+                                        val factor = distance / lastDistance
+                                        zoom = (zoom * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                    }
+                                    lastDistance = distance
+                                    event.changes.forEach { it.consume() }
+                                } else {
+                                    lastDistance = 0f
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
             ) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Speed", fontSize = 11.sp, color = Color.White)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        TimelineModel.SPEED_CHOICES.forEach { choice ->
-                            val chosen = abs(selectedClip.speed - choice) < 0.01f
-                            Box(
-                                modifier = Modifier
-                                    .padding(end = 6.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
-                                    .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    formatSpeed(choice),
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                val contentWidth = maxWidth * zoom
+                val playFrac = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+                Box(modifier = Modifier.horizontalScroll(timelineScroll)) {
+                    Column(modifier = Modifier.width(contentWidth)) {
+                        // The track being edited has a bright border
+                        TimelineView(
+                            segments = segments,
+                            selectedIndex = selected,
+                            playheadMs = playhead,
+                            totalMs = total,
+                            onTimeChosen = { t ->
+                                TextTrack.select(-1)
+                                StickerTrack.select(-1)
+                                TimelineModel.requestSeek(t)
+                                TimelineModel.selectAtTime(t)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(
+                                    width = 2.dp,
+                                    color = if (videoTools) ActiveBorder else InactiveBorder,
+                                    shape = RoundedCornerShape(12.dp)
                                 )
+                        )
+                        if (audioClips.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            MusicTrackView(
+                                clips = audioClips,
+                                totalMs = total,
+                                selectedIndex = selectedAudio,
+                                onSelect = { i ->
+                                    TextTrack.select(-1)
+                                    StickerTrack.select(-1)
+                                    TimelineModel.selectAudio(i)
+                                },
+                                onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
+                                onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
+                                onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = 2.dp,
+                                        color = if (audioMode) ActiveBorder else InactiveBorder,
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            )
+                        }
+                        if (texts.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            TextTrackBar(
+                                texts = texts,
+                                totalMs = total,
+                                selectedIndex = selectedText,
+                                onSelect = { i -> TextTrack.select(i) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = 2.dp,
+                                        color = if (textMode) TextBorder else InactiveBorder,
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            )
+                        }
+                        if (stickers.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            StickerTrackBar(
+                                stickers = stickers,
+                                totalMs = total,
+                                selectedIndex = selectedSticker,
+                                onSelect = { i -> StickerTrack.select(i) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = 2.dp,
+                                        color = if (stickerMode) StickerBorder else InactiveBorder,
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            )
+                        }
+                    }
+
+                    // One playhead line across ALL tracks, with a handle on top
+                    Box(modifier = Modifier.matchParentSize()) {
+                        Box(
+                            modifier = Modifier
+                                .offset(x = contentWidth * playFrac - (3.dp / 2))
+                                .width(3.dp)
+                                .fillMaxHeight()
+                                .background(Color.White)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .offset(x = contentWidth * playFrac - 8.dp, y = (-4).dp)
+                                .size(16.dp)
+                                .clip(CircleShape)
+                                .background(Color.White)
+                        )
+                    }
+                }
+            }
+
+            // --- STICKER SIZE (only after the Size tool is pressed) ---
+            if (showStickerSize && stickerMode && stickerSel != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Sticker size", fontSize = 11.sp, color = Color.White)
+                    Slider(
+                        value = stickerSel.sizeFrac,
+                        onValueChange = { StickerTrack.setSize(selectedSticker, it) },
+                        valueRange = 0.05f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF7CE38B),
+                            activeTrackColor = Color(0xFF7CE38B)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                }
+            }
+
+            // --- SPEED CHOICES (only after the Speed tool is pressed) ---
+            if (showSpeedBar && selectedClip != null && videoTools) {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Speed", fontSize = 11.sp, color = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TimelineModel.SPEED_CHOICES.forEach { choice ->
+                                val chosen = abs(selectedClip.speed - choice) < 0.01f
+                                Box(
+                                    modifier = Modifier
+                                        .padding(end = 6.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                                        .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        formatSpeed(choice),
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // --- VOLUME BAR (only after the Volume button is pressed) ---
-        if (showVolumeBar) {
-            if (audioMode && audioSel != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Audio", fontSize = 11.sp, color = Color.White)
-                    Slider(
-                        value = audioSel.volume,
-                        onValueChange = { TimelineModel.setAudioVolume(selectedAudio, it) },
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFFFF5238),
-                            activeTrackColor = Color(0xFFFF5238)
-                        ),
-                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                    )
-                    Text("${(audioSel.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
-                }
-            } else if (selectedClip != null && videoTools) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = {
-                        TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
-                    }) {
-                        Icon(
-                            imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                            contentDescription = "Clip sound",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
+            // --- VOLUME BAR (only after the Volume button is pressed) ---
+            if (showVolumeBar) {
+                if (audioMode && audioSel != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Audio", fontSize = 11.sp, color = Color.White)
+                        Slider(
+                            value = audioSel.volume,
+                            onValueChange = { TimelineModel.setAudioVolume(selectedAudio, it) },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFFFF5238),
+                                activeTrackColor = Color(0xFFFF5238)
+                            ),
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                         )
+                        Text("${(audioSel.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
                     }
-                    Text("Clip sound", fontSize = 11.sp, color = Color.White)
-                    Slider(
-                        value = selectedClip.volume,
-                        onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFFFF5238),
-                            activeTrackColor = Color(0xFFFF5238)
-                        ),
-                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                    )
-                    Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                } else if (selectedClip != null && videoTools) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = {
+                            TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
+                        }) {
+                            Icon(
+                                imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                                contentDescription = "Clip sound",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Text("Clip sound", fontSize = 11.sp, color = Color.White)
+                        Slider(
+                            value = selectedClip.volume,
+                            onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFFFF5238),
+                                activeTrackColor = Color(0xFFFF5238)
+                            ),
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                        )
+                        Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                    }
+                }
+            }
+
+            // Add audio, text and sticker
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
+                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Audio", fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = {
+                    textEditIndex = -1
+                    showTextDialog = true
+                }, enabled = hasVideo) {
+                    Icon(Icons.Default.TextFields, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Text", fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = { showStickerLibrary = true }, enabled = hasVideo) {
+                    Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Sticker", fontSize = 12.sp)
                 }
             }
         }
 
         // --- ADJUST PANEL (colour: filters, brightness, contrast, saturation) ---
         if (showAdjust && colourPanelOpen) {
-            VideoAdjustPanel(modifier = Modifier.padding(bottom = 4.dp))
+            VideoAdjustPanel(modifier = Modifier.padding(vertical = 4.dp))
         }
 
         // --- EFFECTS PANEL (colour effects) ---
         if (showEffects && colourPanelOpen) {
-            VideoEffectsPanel(modifier = Modifier.padding(bottom = 4.dp))
+            VideoEffectsPanel(modifier = Modifier.padding(vertical = 4.dp))
         }
 
-        // Add audio, text and sticker
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
-                Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Audio", fontSize = 12.sp)
-            }
-            OutlinedButton(onClick = {
-                textEditIndex = -1
-                showTextDialog = true
-            }, enabled = hasVideo) {
-                Icon(Icons.Default.TextFields, null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Text", fontSize = 12.sp)
-            }
-            OutlinedButton(onClick = { showStickerLibrary = true }, enabled = hasVideo) {
-                Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Sticker", fontSize = 12.sp)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // --- TOOLS (depend on the selected track) ---
         if (textMode) {
