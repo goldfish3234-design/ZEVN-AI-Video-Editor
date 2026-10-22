@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -22,27 +23,28 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Filter presets, colour effects, and the brightness, contrast and saturation sliders.
- * Every change shows in the live colour preview and is applied to the exported video.
+ * Colour adjustment only: filter presets, brightness, contrast and saturation.
+ * The height is limited, so the video preview above it always stays visible.
+ * Effects are in their own panel (VideoEffectsPanel).
  */
 @Composable
 fun VideoAdjustPanel(modifier: Modifier = Modifier) {
     val adj by VideoAdjustStore.adjust.collectAsState()
 
-    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
-        ChipRow {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .heightIn(max = 230.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             VideoFilters.list.forEach { (key, label) ->
-                Chip(label, selected = adj.filter == key) {
+                AdjustChip(label, selected = adj.filter == key) {
                     VideoAdjustStore.set(VideoFilters.preset(key).copy(effect = adj.effect))
-                }
-            }
-        }
-
-        Text("Effects", color = Color(0xFFA0A0B2), fontSize = 11.sp)
-        ChipRow {
-            VideoEffects.list.forEach { (key, label) ->
-                Chip(label, selected = adj.effect == key) {
-                    VideoAdjustStore.set(adj.copy(effect = key))
                 }
             }
         }
@@ -63,27 +65,17 @@ fun VideoAdjustPanel(modifier: Modifier = Modifier) {
             onChange = { VideoAdjustStore.set(adj.copy(saturation = it, filter = "custom")) }
         )
 
-        TextButton(onClick = { VideoAdjustStore.reset() }) {
-            Text("Reset all", color = Color(0xFFA0A0B2), fontSize = 12.sp)
+        TextButton(onClick = { VideoAdjustStore.set(VideoAdjust(effect = adj.effect)) }) {
+            Text("Reset colour", color = Color(0xFFA0A0B2), fontSize = 12.sp)
         }
     }
 }
 
 @Composable
-private fun ChipRow(content: @Composable () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        content()
-    }
-}
-
-@Composable
-private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun AdjustChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .padding(end = 6.dp, top = 4.dp, bottom = 4.dp)
+            .padding(end = 6.dp, top = 2.dp, bottom = 2.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) Color(0xFFFF5238) else Color(0xFF222230))
             .clickable { onClick() }
