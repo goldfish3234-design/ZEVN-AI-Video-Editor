@@ -981,6 +981,12 @@ fun EditorScreen(
                     }
                 }
                 item {
+                    // Remove BG: photo or video cut-out (the same dialog as Sticker)
+                    ToolButton("Remove BG", Icons.Default.AutoFixNormal, enabled = hasVideo && videoTools) {
+                        showStickerLibrary = true
+                    }
+                }
+                item {
                     ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
                         showAdjust = !showAdjust
                         if (showAdjust) showEffects = false
@@ -1051,7 +1057,7 @@ fun EditorScreen(
         }
     }
 
-    // --- STICKER LIBRARY (built-in stickers, or import from the phone) ---
+    // --- STICKER LIBRARY (built-in stickers, Remove BG, or import from the phone) ---
     if (showStickerLibrary) {
         StickerLibraryDialog(
             onPick = { uri ->
