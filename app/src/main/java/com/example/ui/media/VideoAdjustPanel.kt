@@ -6,11 +6,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -24,7 +22,7 @@ import androidx.compose.ui.unit.sp
 
 /**
  * Colour adjustment only: filter presets, brightness, contrast and saturation.
- * The height is limited, so the video preview above it always stays visible.
+ * Kept compact (about 150 dp tall) so the picture above it stays large.
  * Effects are in their own panel (VideoEffectsPanel).
  */
 @Composable
@@ -35,60 +33,58 @@ fun VideoAdjustPanel(modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp)
-            .heightIn(max = 230.dp)
-            .verticalScroll(rememberScrollState())
+            .heightIn(max = 150.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically
         ) {
             VideoFilters.list.forEach { (key, label) ->
-                AdjustChip(label, selected = adj.filter == key) {
+                CompactChip(label, selected = adj.filter == key) {
                     VideoAdjustStore.set(VideoFilters.preset(key).copy(effect = adj.effect))
                 }
             }
+            CompactChip("Reset", selected = false) {
+                VideoAdjustStore.set(VideoAdjust(effect = adj.effect))
+            }
         }
 
-        AdjustSlider(
+        CompactSlider(
             label = "Brightness",
             value = adj.brightness,
             onChange = { VideoAdjustStore.set(adj.copy(brightness = it, filter = "custom")) }
         )
-        AdjustSlider(
+        CompactSlider(
             label = "Contrast",
             value = adj.contrast,
             onChange = { VideoAdjustStore.set(adj.copy(contrast = it, filter = "custom")) }
         )
-        AdjustSlider(
+        CompactSlider(
             label = "Saturation",
             value = adj.saturation,
             onChange = { VideoAdjustStore.set(adj.copy(saturation = it, filter = "custom")) }
         )
-
-        TextButton(onClick = { VideoAdjustStore.set(VideoAdjust(effect = adj.effect)) }) {
-            Text("Reset colour", color = Color(0xFFA0A0B2), fontSize = 12.sp)
-        }
     }
 }
 
 @Composable
-private fun AdjustChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun CompactChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .padding(end = 6.dp, top = 2.dp, bottom = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .padding(end = 5.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(if (selected) Color(0xFFFF5238) else Color(0xFF222230))
             .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
-private fun AdjustSlider(label: String, value: Float, onChange: (Float) -> Unit) {
+private fun CompactSlider(label: String, value: Float, onChange: (Float) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(78.dp))
+        Text(label, color = Color.White, fontSize = 10.sp, modifier = Modifier.width(66.dp))
         Slider(
             value = value,
             onValueChange = onChange,
@@ -97,8 +93,8 @@ private fun AdjustSlider(label: String, value: Float, onChange: (Float) -> Unit)
                 thumbColor = Color(0xFFFF5238),
                 activeTrackColor = Color(0xFFFF5238)
             ),
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
         )
-        Text("${(value * 100).toInt()}", color = Color(0xFFA0A0B2), fontSize = 11.sp, modifier = Modifier.width(34.dp))
+        Text("${(value * 100).toInt()}", color = Color(0xFFA0A0B2), fontSize = 10.sp, modifier = Modifier.width(28.dp))
     }
 }
