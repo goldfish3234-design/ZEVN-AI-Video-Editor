@@ -49,6 +49,7 @@ import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
 import com.example.ui.media.VideoAdjustPanel
 import com.example.ui.media.VideoAdjustStore
+import com.example.ui.media.VideoEffectsPanel
 import com.example.ui.sticker.StickerLayer
 import com.example.ui.sticker.StickerLibraryDialog
 import com.example.ui.sticker.StickerStore
@@ -115,8 +116,10 @@ fun EditorScreen(
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
     // The sticker size bar only appears after the Size tool is pressed
     var showStickerSize by rememberSaveable { mutableStateOf(false) }
-    // The adjust panel (filters, effects, sliders) and its live preview appear after the Adjust tool is pressed
+    // Colour adjust and colour effects are separate panels; only one is open at a time,
+    // so the video preview above always keeps its space.
     var showAdjust by rememberSaveable { mutableStateOf(false) }
+    var showEffects by rememberSaveable { mutableStateOf(false) }
     var showStickerLibrary by remember { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
@@ -304,6 +307,7 @@ fun EditorScreen(
     val stickerMode = !textMode && stickerSel != null
     val audioMode = !textMode && !stickerMode && activeTrack == ActiveTrack.MUSIC && audioSel != null
     val videoTools = !textMode && !stickerMode && activeTrack == ActiveTrack.VIDEO
+    val colourPanelOpen = (showAdjust || showEffects) && hasVideo && videoTools
     val selectedClip = segments.getOrNull(selected)
     val scrollFrac = if (timelineScroll.maxValue > 0) {
         timelineScroll.value.toFloat() / timelineScroll.maxValue.toFloat()
@@ -386,8 +390,8 @@ fun EditorScreen(
 
                     if (hasVideo) {
                         VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
-                        // While the Adjust panel is open, the frame under the playhead shows the colours live
-                        if (showAdjust && videoTools) {
+                        // While a colour panel is open, the frame under the playhead shows the colours live
+                        if (colourPanelOpen) {
                             ColorPreview(
                                 sources = sources,
                                 segments = segments,
@@ -744,9 +748,14 @@ fun EditorScreen(
             }
         }
 
-        // --- VIDEO ADJUST PANEL (only after the Adjust tool is pressed) ---
-        if (showAdjust && hasVideo && videoTools) {
+        // --- ADJUST PANEL (colour: filters, brightness, contrast, saturation) ---
+        if (showAdjust && colourPanelOpen) {
             VideoAdjustPanel(modifier = Modifier.padding(bottom = 4.dp))
+        }
+
+        // --- EFFECTS PANEL (colour effects) ---
+        if (showEffects && colourPanelOpen) {
+            VideoEffectsPanel(modifier = Modifier.padding(bottom = 4.dp))
         }
 
         // Add audio, text and sticker
@@ -926,6 +935,13 @@ fun EditorScreen(
                 item {
                     ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
                         showAdjust = !showAdjust
+                        if (showAdjust) showEffects = false
+                    }
+                }
+                item {
+                    ToolButton("Effects", Icons.Default.Palette, enabled = hasVideo && videoTools) {
+                        showEffects = !showEffects
+                        if (showEffects) showAdjust = false
                     }
                 }
                 item {
