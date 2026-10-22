@@ -20,6 +20,7 @@ import com.example.ui.media.TimelineModel
 /**
  * Video track. Each segment is a block sized by its duration.
  * Tap or drag anywhere on the track to move the playhead. [modifier] should set the width (zoom).
+ * The track is kept short (56 dp) so the preview above stays large.
  */
 @Composable
 fun TimelineView(
@@ -35,7 +36,7 @@ fun TimelineView(
 
     Box(
         modifier = modifier
-            .height(96.dp)
+            .height(56.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(Color(0xFF14141C))
             .pointerInput(total) {
@@ -58,7 +59,7 @@ fun TimelineView(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(vertical = 10.dp),
+                .padding(vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             segments.forEachIndexed { i, seg ->
@@ -72,7 +73,7 @@ fun TimelineView(
                 ) {
                     Text(
                         text = "${i + 1} · ${seg.durationMs / 1000}s",
-                        fontSize = 10.sp,
+                        fontSize = 9.sp,
                         color = Color.White
                     )
                 }
