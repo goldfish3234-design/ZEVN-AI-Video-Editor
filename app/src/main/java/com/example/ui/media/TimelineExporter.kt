@@ -64,9 +64,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Clip speed and volume, the colour adjustment (brightness, contrast, saturation, filter), text overlays
- * and sticker/image overlays are all burned into the video. Overlapping audio clips are placed in
- * separate sequences, so Media3 mixes them. Must be started from the main thread.
+ * Clip speed and volume, the colour adjustment (brightness, contrast, saturation, filter), text overlays,
+ * sticker/image overlays and animated cut-outs are all burned into the video. Overlapping audio clips
+ * are placed in separate sequences, so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -108,8 +108,8 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * Cuts every video segment wherever a text or sticker starts or ends, and wherever a text's animation
-     * changes, so that inside one piece every overlay has a fixed look.
+     * Cuts every video segment wherever a text or sticker starts or ends, wherever a text's animation
+     * changes, and every animation frame of an animated cut-out. Inside one piece every overlay is fixed.
      * Source positions are converted with each clip's speed.
      */
     private fun buildPieces(
@@ -125,8 +125,18 @@ class TimelineExporter(private val context: Context) {
             raw.addAll(TextAnimMath.breakpoints(t))
         }
         for (s in stickers) {
+            val end = s.startMs + s.durationMs
             raw.add(s.startMs)
-            raw.add(s.startMs + s.durationMs)
+            raw.add(end)
+            if (s.frames.isNotEmpty()) {
+                // one cut between every animation frame
+                val frameMs = (1000f / s.fps).toLong().coerceAtLeast(1L)
+                var t = s.startMs
+                while (t < end) {
+                    raw.add(t)
+                    t += frameMs
+                }
+            }
         }
         val breaks = raw.filter { it in 0L..totalMs }.distinct().sorted()
 
@@ -252,7 +262,9 @@ class TimelineExporter(private val context: Context) {
             }
             for (s in stickers) {
                 if (mid < s.startMs || mid >= s.startMs + s.durationMs) continue
-                val overlay = stickerOverlay(s, frameW, frameH, bitmapCache)
+                // an animated cut-out shows the frame for this moment
+                val picture = StickerTrack.frameUriAt(s, mid)
+                val overlay = stickerOverlay(s, picture, frameW, frameH, bitmapCache)
                 if (overlay != null) overlays.add(overlay)
             }
             if (overlays.isNotEmpty()) {
@@ -371,18 +383,20 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * One sticker/image overlay. The picture is scaled to [StickerClip.sizeFrac] of the frame width and
-     * placed at the same position as in the preview (top-left corner at xFrac, yFrac).
+     * One sticker/image overlay. [picture] is the file to show (for an animated cut-out, the frame of this moment).
+     * The picture is scaled to [StickerClip.sizeFrac] of the frame width and placed at the same position
+     * as in the preview (top-left corner at xFrac, yFrac).
      */
     @OptIn(UnstableApi::class)
     private fun stickerOverlay(
         s: StickerClip,
+        picture: String,
         frameW: Float,
         frameH: Float,
         cache: HashMap<String, Bitmap>
     ): BitmapOverlay? {
-        val key = "s${s.id}"
-        val bmp = cache[key] ?: loadSticker(s, frameW)?.also { cache[key] = it } ?: return null
+        val key = "p|$picture|${s.sizeFrac}"
+        val bmp = cache[key] ?: loadPicture(picture, s.sizeFrac, frameW)?.also { cache[key] = it } ?: return null
         val cx = s.xFrac + (bmp.width / frameW) / 2f
         val cy = s.yFrac + (bmp.height / frameH) / 2f
         val settings = OverlaySettings.Builder()
@@ -391,11 +405,11 @@ class TimelineExporter(private val context: Context) {
         return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
     }
 
-    /** Loads a sticker picture and scales it to the export size. Returns null if the file cannot be read. */
-    private fun loadSticker(s: StickerClip, frameW: Float): Bitmap? {
-        val path = Uri.parse(s.uri).path ?: return null
+    /** Loads a picture and scales it to the export size. Returns null if the file cannot be read. */
+    private fun loadPicture(picture: String, sizeFrac: Float, frameW: Float): Bitmap? {
+        val path = Uri.parse(picture).path ?: return null
         val decoded = BitmapFactory.decodeFile(path) ?: return null
-        val targetW = (frameW * s.sizeFrac).toInt().coerceAtLeast(1)
+        val targetW = (frameW * sizeFrac).toInt().coerceAtLeast(1)
         val targetH = (decoded.height.toFloat() * targetW / decoded.width.toFloat()).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
     }
