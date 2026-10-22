@@ -185,6 +185,18 @@ object TimelineModel {
         if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
     }
 
+    /**
+     * Replaces the video clips with the result of AutoCut. Added to history, so Undo brings the clips back.
+     * The audio track is kept as it is.
+     */
+    fun applyAutoCut(newSegments: List<Segment>) {
+        if (newSegments.isEmpty()) return
+        recordHistory()
+        _segments.value = newSegments
+        _selected.value = -1
+        if (_playheadMs.value > totalDurationMs) _playheadMs.value = totalDurationMs
+    }
+
     // ---------------- Audio track ----------------
 
     /** Adds an audio clip at [offsetMs] (default: the playhead). */
