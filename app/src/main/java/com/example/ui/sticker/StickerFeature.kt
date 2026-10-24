@@ -30,11 +30,21 @@ import java.io.File
 private const val MIN_STICKER_MS = 300L
 private const val EDGE_PX = 48f
 
+/** Kinds of picture layer. */
+object LayerMode {
+    /** A small sticker that can be moved and resized. */
+    const val STICKER = "sticker"
+    /** A photo that fills the whole frame for its time on the timeline (like a video clip). */
+    const val PHOTO = "photo"
+    /** A small picture in a corner over the video (picture-in-picture). */
+    const val PIP = "pip"
+}
+
 /**
- * An image or sticker placed over the video.
+ * A picture layer on the timeline.
  * Position is a fraction of the preview (0..1). [sizeFrac] is the width as a fraction of the preview width.
- * [uri] is a file:// address of a picture (PNG with transparency works best).
- * If [frames] is not empty, this is an animated cut-out: the frames play one after another at [fps].
+ * [uri] is a file:// address of a picture. If [frames] is not empty, this is an animated picture: the frames
+ * play one after another at [fps]. [mode] is one of [LayerMode].
  */
 data class StickerClip(
     val id: Long,
@@ -45,10 +55,11 @@ data class StickerClip(
     val yFrac: Float,
     val sizeFrac: Float,
     val frames: List<String> = emptyList(),
-    val fps: Float = 10f
+    val fps: Float = 10f,
+    val mode: String = LayerMode.STICKER
 )
 
-/** The sticker track: the list of stickers and which one is selected. */
+/** The picture track: the list of layers and which one is selected. */
 object StickerTrack {
     private val _stickers = MutableStateFlow<List<StickerClip>>(emptyList())
     val stickers: StateFlow<List<StickerClip>> = _stickers.asStateFlow()
@@ -66,40 +77,51 @@ object StickerTrack {
 
     fun newId(): Long = nextId++
 
-    /** Adds a picture sticker at [startMs] (timeline ms) and selects it. */
-    fun add(uri: String, startMs: Long, durationMs: Long) {
+    /** Where a new layer of this [mode] appears on the preview. */
+    private fun placement(mode: String): Triple<Float, Float, Float> = when (mode) {
+        LayerMode.PHOTO -> Triple(0f, 0f, 1f)
+        LayerMode.PIP -> Triple(0.6f, 0.6f, 0.36f)
+        else -> Triple(0.3f, 0.3f, 0.3f)
+    }
+
+    /** Adds a picture (sticker, photo or picture-in-picture) at [startMs] and selects it. */
+    fun add(uri: String, startMs: Long, durationMs: Long, mode: String = LayerMode.STICKER) {
+        val (x, y, size) = placement(mode)
         val clip = StickerClip(
             id = newId(),
             uri = uri,
             startMs = startMs.coerceAtLeast(0L),
             durationMs = durationMs,
-            xFrac = 0.3f,
-            yFrac = 0.3f,
-            sizeFrac = 0.3f
+            xFrac = x,
+            yFrac = y,
+            sizeFrac = size,
+            mode = mode
         )
         _stickers.value = _stickers.value + clip
         _selected.value = _stickers.value.lastIndex
     }
 
-    /** Adds an animated cut-out (a list of frames) at [startMs] and selects it. */
-    fun addAnimated(frames: List<String>, fps: Float, startMs: Long) {
+    /** Adds an animated picture (a list of frames) at [startMs] and selects it. */
+    fun addAnimated(frames: List<String>, fps: Float, startMs: Long, mode: String = LayerMode.STICKER) {
         if (frames.isEmpty()) return
+        val (x, y, size) = placement(mode)
         val clip = StickerClip(
             id = newId(),
             uri = frames.first(),
             startMs = startMs.coerceAtLeast(0L),
             durationMs = (frames.size * 1000f / fps).toLong(),
-            xFrac = 0.3f,
-            yFrac = 0.3f,
-            sizeFrac = 0.4f,
+            xFrac = x,
+            yFrac = y,
+            sizeFrac = if (mode == LayerMode.STICKER) 0.4f else size,
             frames = frames,
-            fps = fps
+            fps = fps,
+            mode = mode
         )
         _stickers.value = _stickers.value + clip
         _selected.value = _stickers.value.lastIndex
     }
 
-    /** The picture to show for [s] at timeline time [timeMs]. Animated cut-outs loop. */
+    /** The picture to show for [s] at timeline time [timeMs]. Animated pictures loop. */
     fun frameUriAt(s: StickerClip, timeMs: Long): String {
         if (s.frames.isEmpty()) return s.uri
         val elapsed = (timeMs - s.startMs).coerceAtLeast(0L)
@@ -128,14 +150,16 @@ object StickerTrack {
         _selected.value = if (index in _stickers.value.indices) index else -1
     }
 
-    /** Moves the sticker on the preview. Values are fractions of the preview. */
+    /** Moves the layer on the preview. Values are fractions of the preview. A photo always fills the frame. */
     fun setPosition(index: Int, x: Float, y: Float) {
         val c = _stickers.value.getOrNull(index) ?: return
+        if (c.mode == LayerMode.PHOTO) return
         replace(index, c.copy(xFrac = x.coerceIn(-0.2f, 1f), yFrac = y.coerceIn(-0.2f, 1f)))
     }
 
     fun setSize(index: Int, size: Float) {
         val c = _stickers.value.getOrNull(index) ?: return
+        if (c.mode == LayerMode.PHOTO) return
         replace(index, c.copy(sizeFrac = size.coerceIn(0.05f, 1f)))
     }
 
@@ -158,7 +182,7 @@ object StickerTrack {
         replace(index, c.copy(durationMs = (c.durationMs + deltaMs).coerceIn(MIN_STICKER_MS, maxDur)))
     }
 
-    /** Moves the start of the sticker to the playhead (keeps its end). */
+    /** Moves the start of the layer to the playhead (keeps its end). */
     fun trimStartToPlayhead(index: Int, playheadMs: Long) {
         val c = _stickers.value.getOrNull(index) ?: return
         val end = c.startMs + c.durationMs
@@ -166,7 +190,7 @@ object StickerTrack {
         replace(index, c.copy(startMs = playheadMs, durationMs = end - playheadMs))
     }
 
-    /** Moves the end of the sticker to the playhead (keeps its start). */
+    /** Moves the end of the layer to the playhead (keeps its start). */
     fun trimEndToPlayhead(index: Int, playheadMs: Long) {
         val c = _stickers.value.getOrNull(index) ?: return
         if (playheadMs < c.startMs + MIN_STICKER_MS) return
@@ -174,7 +198,7 @@ object StickerTrack {
     }
 }
 
-/** Saves and loads the stickers of the current project (stickers.json in the project folder). */
+/** Saves and loads the picture layers of the current project (stickers.json in the project folder). */
 object StickerStore {
 
     fun save(context: Context, list: List<StickerClip>) {
@@ -193,6 +217,7 @@ object StickerStore {
                     .put("sizeFrac", s.sizeFrac.toDouble())
                     .put("frames", framesArr)
                     .put("fps", s.fps.toDouble())
+                    .put("mode", s.mode)
             )
         }
         File(ProjectStore.currentMediaDir(context), "stickers.json").writeText(arr.toString())
@@ -221,7 +246,8 @@ object StickerStore {
                         yFrac = o.optDouble("yFrac", 0.3).toFloat(),
                         sizeFrac = o.optDouble("sizeFrac", 0.3).toFloat(),
                         frames = frames,
-                        fps = o.optDouble("fps", 10.0).toFloat()
+                        fps = o.optDouble("fps", 10.0).toFloat(),
+                        mode = o.optString("mode", LayerMode.STICKER)
                     )
                 )
             }
@@ -232,7 +258,10 @@ object StickerStore {
     }
 }
 
-/** Draws the stickers that are visible at the playhead. Drag a sticker to move it; tap to select. */
+/**
+ * Draws the picture layers that are visible at the playhead.
+ * A photo fills the frame; a sticker or picture-in-picture can be dragged; tap to select.
+ */
 @Composable
 fun StickerLayer(
     stickers: List<StickerClip>,
@@ -248,46 +277,59 @@ fun StickerLayer(
         val hPx = with(density) { maxHeight.toPx() }
         stickers.forEachIndexed { i, s ->
             if (playheadMs >= s.startMs && playheadMs < s.startMs + s.durationMs) {
-                Box(
-                    modifier = Modifier
-                        .offset(x = w * s.xFrac, y = h * s.yFrac)
-                        .width(w * s.sizeFrac)
-                        .then(
-                            if (i == selectedIndex) {
-                                Modifier.border(2.dp, Color(0xFFFFB800), RoundedCornerShape(4.dp))
-                            } else {
-                                Modifier
-                            }
-                        )
-                        .pointerInput(i, wPx, hPx) {
-                            detectTapGestures(onTap = { StickerTrack.select(i) })
-                        }
-                        .pointerInput(i, wPx, hPx) {
-                            detectDragGestures(
-                                onDragStart = { StickerTrack.select(i) },
-                                onDrag = { change, drag ->
-                                    change.consume()
-                                    if (wPx > 0f && hPx > 0f) {
-                                        val cur = StickerTrack.stickers.value.getOrNull(i) ?: return@detectDragGestures
-                                        StickerTrack.setPosition(i, cur.xFrac + drag.x / wPx, cur.yFrac + drag.y / hPx)
-                                    }
-                                }
-                            )
-                        }
-                ) {
+                if (s.mode == LayerMode.PHOTO) {
                     AsyncImage(
                         model = StickerTrack.frameUriAt(s, playheadMs),
-                        contentDescription = "Sticker",
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier.fillMaxWidth()
+                        contentDescription = "Photo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(i) {
+                                detectTapGestures(onTap = { StickerTrack.select(i) })
+                            }
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .offset(x = w * s.xFrac, y = h * s.yFrac)
+                            .width(w * s.sizeFrac)
+                            .then(
+                                if (i == selectedIndex) {
+                                    Modifier.border(2.dp, Color(0xFFFFB800), RoundedCornerShape(4.dp))
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .pointerInput(i, wPx, hPx) {
+                                detectTapGestures(onTap = { StickerTrack.select(i) })
+                            }
+                            .pointerInput(i, wPx, hPx) {
+                                detectDragGestures(
+                                    onDragStart = { StickerTrack.select(i) },
+                                    onDrag = { change, drag ->
+                                        change.consume()
+                                        if (wPx > 0f && hPx > 0f) {
+                                            val cur = StickerTrack.stickers.value.getOrNull(i) ?: return@detectDragGestures
+                                            StickerTrack.setPosition(i, cur.xFrac + drag.x / wPx, cur.yFrac + drag.y / hPx)
+                                        }
+                                    }
+                                )
+                            }
+                    ) {
+                        AsyncImage(
+                            model = StickerTrack.frameUriAt(s, playheadMs),
+                            contentDescription = "Sticker",
+                            contentScale = ContentScale.FillWidth,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-/** Sticker track: one block per sticker, same edit gestures as the text track. */
+/** Picture track: one block per layer, same edit gestures as the text track. */
 @Composable
 fun StickerTrackBar(
     stickers: List<StickerClip>,
@@ -348,7 +390,11 @@ fun StickerTrackBar(
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = if (s.frames.isNotEmpty()) "Cut-out ${i + 1}" else "Sticker ${i + 1}",
+                    text = when (s.mode) {
+                        LayerMode.PHOTO -> "Photo ${i + 1}"
+                        LayerMode.PIP -> "PiP ${i + 1}"
+                        else -> if (s.frames.isNotEmpty()) "Cut-out ${i + 1}" else "Sticker ${i + 1}"
+                    },
                     fontSize = 9.sp,
                     color = Color.Black,
                     maxLines = 1,
