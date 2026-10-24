@@ -47,6 +47,8 @@ import com.example.ui.media.ProjectStore
 import com.example.ui.media.SilenceRange
 import com.example.ui.media.TimelineExporter
 import com.example.ui.media.TimelineModel
+import com.example.ui.media.TransitionPreview
+import com.example.ui.media.TransitionStore
 import com.example.ui.media.VideoAdjustPanel
 import com.example.ui.media.VideoAdjustStore
 import com.example.ui.media.VideoEffectsPanel
@@ -103,6 +105,7 @@ fun EditorScreen(
     val stickers by StickerTrack.stickers.collectAsState()
     val selectedSticker by StickerTrack.selectedSticker.collectAsState()
     val adjust by VideoAdjustStore.adjust.collectAsState()
+    val transitionMap by TransitionStore.map.collectAsState()
 
     val currentProj = project ?: return
 
@@ -124,6 +127,8 @@ fun EditorScreen(
     var showEffects by rememberSaveable { mutableStateOf(false) }
     // Live background removal on the preview (Remove BG tool)
     var showLiveCutout by rememberSaveable { mutableStateOf(false) }
+    // Transition choices for the selected clip (Transition tool)
+    var showTransitions by rememberSaveable { mutableStateOf(false) }
     var showStickerLibrary by remember { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
@@ -151,7 +156,7 @@ fun EditorScreen(
         if (selectedSticker >= 0) TextTrack.select(-1)
     }
 
-    // Open the current project once: timeline (if empty), text, stickers and colour settings
+    // Open the current project once: timeline (if empty), text, stickers, colour and transitions
     LaunchedEffect(Unit) {
         val saved = withContext(Dispatchers.IO) { ProjectStore.loadCurrent(context) }
         if (TimelineModel.sources.value.isEmpty() && saved != null) {
@@ -161,11 +166,12 @@ fun EditorScreen(
         val savedStickers = withContext(Dispatchers.IO) { StickerStore.load(context) }
         StickerTrack.restore(savedStickers)
         withContext(Dispatchers.IO) { VideoAdjustStore.load(context) }
+        withContext(Dispatchers.IO) { TransitionStore.load(context) }
         loaded = true
     }
 
     // Auto-save shortly after every change
-    LaunchedEffect(sources, segments, audioClips, texts, stickers, adjust, loaded) {
+    LaunchedEffect(sources, segments, audioClips, texts, stickers, adjust, transitionMap, loaded) {
         if (loaded) {
             delay(500L)
             val state = ProjectState(ProjectStore.currentName, sources, segments, audioClips, texts)
@@ -173,6 +179,7 @@ fun EditorScreen(
                 ProjectStore.save(context, state)
                 StickerStore.save(context, stickers)
                 VideoAdjustStore.save(context)
+                TransitionStore.save(context)
             }
         }
     }
@@ -195,6 +202,7 @@ fun EditorScreen(
                 )
                 StickerStore.save(context, StickerTrack.stickers.value)
                 VideoAdjustStore.save(context)
+                TransitionStore.save(context)
             }
         }
     }
@@ -363,6 +371,12 @@ fun EditorScreen(
     // In colour mode the screen is used for the picture: the timeline is replaced by a simple scrub bar
     val colourPanelOpen = (showAdjust || showEffects) && hasVideo && videoTools
     val selectedClip = segments.getOrNull(selected)
+    // the transition type of the selected clip (recomputed when the transitions change)
+    val currentTransition = if (selectedClip != null) {
+        transitionMap[TransitionStore.keyOf(selectedClip)] ?: "none"
+    } else {
+        "none"
+    }
     val scrollFrac = if (timelineScroll.maxValue > 0) {
         timelineScroll.value.toFloat() / timelineScroll.maxValue.toFloat()
     } else {
@@ -464,6 +478,13 @@ fun EditorScreen(
                                 modifier = mediaModifier
                             )
                         }
+                        // Transition: shown on the preview while the playhead is inside it
+                        TransitionPreview(
+                            sources = sources,
+                            segments = segments,
+                            playheadMs = playhead,
+                            modifier = mediaModifier
+                        )
                     } else {
                         // No video yet: an empty black frame with an import button (no default picture)
                         Button(
@@ -728,6 +749,40 @@ fun EditorScreen(
                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                     )
                     Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
+                }
+            }
+
+            // --- TRANSITION CHOICES (only after the Transition tool is pressed) ---
+            if (showTransitions && selectedClip != null && videoTools) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TransitionStore.TYPES.forEach { (key, label) ->
+                            val chosen = currentTransition == key
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                                    .clickable { TransitionStore.set(selectedClip, key) }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    Text(
+                        if (selected == 0) "The first clip has nothing before it, so its transition is not shown"
+                        else "The transition plays at the start of this clip (0.5 s)",
+                        color = Color(0xFFA0A0B2),
+                        fontSize = 10.sp
+                    )
                 }
             }
 
@@ -1017,6 +1072,18 @@ fun EditorScreen(
                         if (showLiveCutout) {
                             showAdjust = false
                             showEffects = false
+                            showTransitions = false
+                        }
+                    }
+                }
+                item {
+                    // Transition at the start of the selected clip (dissolve, fade from black, flash white)
+                    ToolButton("Transition", Icons.Default.SwapHoriz, enabled = hasSelection && videoTools) {
+                        showTransitions = !showTransitions
+                        if (showTransitions) {
+                            showAdjust = false
+                            showEffects = false
+                            showLiveCutout = false
                         }
                     }
                 }
@@ -1026,6 +1093,7 @@ fun EditorScreen(
                         if (showAdjust) {
                             showEffects = false
                             showLiveCutout = false
+                            showTransitions = false
                         }
                     }
                 }
@@ -1035,6 +1103,7 @@ fun EditorScreen(
                         if (showEffects) {
                             showAdjust = false
                             showLiveCutout = false
+                            showTransitions = false
                         }
                     }
                 }
@@ -1097,7 +1166,7 @@ fun EditorScreen(
         }
     }
 
-    // --- STICKER LIBRARY (built-in stickers, or import from the phone) ---
+    // --- STICKER LIBRARY (built-in stickers, photos, picture-in-picture) ---
     if (showStickerLibrary) {
         StickerLibraryDialog(
             onPick = { uri ->
