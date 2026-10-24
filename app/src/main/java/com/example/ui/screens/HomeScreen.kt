@@ -6,7 +6,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -48,7 +47,7 @@ fun HomeScreen(
 
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var draftsVersion by remember { mutableIntStateOf(0) }
-    val drafts = remember(draftsVersion) { ProjectStore.list(context) }
+    val drafts: List<ProjectSummary> = remember(draftsVersion) { ProjectStore.list(context) }
 
     LazyColumn(
         modifier = Modifier
@@ -141,23 +140,25 @@ fun HomeScreen(
                 }
             }
         } else {
-            items(drafts, key = { it.id }) { draft ->
-                DraftRow(
-                    draft = draft,
-                    onOpen = {
-                        val state = ProjectStore.open(context, draft.id)
-                        if (state != null) {
-                            TimelineModel.restore(state.sources, state.segments, state.music)
-                            onNavigateToEditor()
-                        } else {
-                            Toast.makeText(context, "This project could not be opened", Toast.LENGTH_SHORT).show()
+            drafts.forEach { draft ->
+                item {
+                    DraftRow(
+                        draft = draft,
+                        onOpen = {
+                            val state = ProjectStore.open(context, draft.id)
+                            if (state != null) {
+                                TimelineModel.restore(state.sources, state.segments, state.music)
+                                onNavigateToEditor()
+                            } else {
+                                Toast.makeText(context, "This project could not be opened", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onDelete = {
+                            ProjectStore.delete(context, draft.id)
+                            draftsVersion++
                         }
-                    },
-                    onDelete = {
-                        ProjectStore.delete(context, draft.id)
-                        draftsVersion++
-                    }
-                )
+                    )
+                }
             }
         }
     }
