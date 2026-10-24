@@ -7,9 +7,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.net.Uri
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,12 +16,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,13 +25,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.example.ui.media.BackgroundRemover
-import com.example.ui.media.CutoutVideo
-import com.example.ui.media.MediaProbe
-import com.example.ui.media.TimelineModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.PI
@@ -171,7 +156,6 @@ object StickerLibrary {
 
 /**
  * Grid of built-in stickers. Tap one to place it on the preview at the playhead.
- * Also here: "Remove background from a photo" (a sticker) and "Cut out from a video" (an animated sticker).
  * [onImport] opens the phone's picker for your own picture.
  */
 @Composable
@@ -181,54 +165,7 @@ fun StickerLibraryDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val items = remember { StickerLibrary.items(context) }
-    var busy by remember { mutableStateOf(false) }
-    // Cut out from a video: -1 = idle, otherwise the progress 0..100
-    var cutProgress by remember { mutableIntStateOf(-1) }
-
-    // Remove BG: a photo is picked, the subject is cut out, and the cut-out is used as a sticker
-    val bgPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null && !busy) {
-            busy = true
-            scope.launch {
-                val file = withContext(Dispatchers.IO) { BackgroundRemover.removeToFile(context, uri) }
-                busy = false
-                if (file != null) {
-                    onPick(Uri.fromFile(file).toString())
-                } else {
-                    Toast.makeText(context, "ছবি থেকে ব্যাকগ্রাউন্ড মোছা যায়নি", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    // Cut out from a video: the subject of the video is cut frame by frame and placed as an animated sticker
-    val videoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null && cutProgress < 0) {
-            cutProgress = 0
-            scope.launch {
-                val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
-                val frames = withContext(Dispatchers.IO) {
-                    CutoutVideo.generate(context, uri, 0L, duration) { p ->
-                        scope.launch { cutProgress = p }
-                    }
-                }
-                cutProgress = -1
-                if (frames != null) {
-                    StickerTrack.addAnimated(frames, CutoutVideo.FPS, TimelineModel.playheadMs.value)
-                    Toast.makeText(context, "ভিডিও থেকে কাটা অংশ যোগ হয়েছে", Toast.LENGTH_SHORT).show()
-                    onDismiss()
-                } else {
-                    Toast.makeText(context, "ভিডিও থেকে কাটা যায়নি", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -263,28 +200,8 @@ fun StickerLibraryDialog(
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = onImport, enabled = !busy && cutProgress < 0) {
+                OutlinedButton(onClick = onImport) {
                     Text("Import from phone", fontSize = 12.sp)
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                OutlinedButton(
-                    onClick = { bgPicker.launch(arrayOf("image/*")) },
-                    enabled = !busy && cutProgress < 0
-                ) {
-                    Text(
-                        if (busy) "ব্যাকগ্রাউন্ড মোছা হচ্ছে..." else "Remove background from a photo",
-                        fontSize = 12.sp
-                    )
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                OutlinedButton(
-                    onClick = { videoPicker.launch(arrayOf("video/*")) },
-                    enabled = !busy && cutProgress < 0
-                ) {
-                    Text(
-                        if (cutProgress >= 0) "ভিডিও কাটা হচ্ছে... $cutProgress%" else "Cut out from a video (up to 10 s)",
-                        fontSize = 12.sp
-                    )
                 }
             }
         },
