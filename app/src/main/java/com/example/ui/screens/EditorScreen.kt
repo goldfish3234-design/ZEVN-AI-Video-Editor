@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ import com.example.ui.media.ActiveTrack
 import com.example.ui.media.AutoCut
 import com.example.ui.media.ColorPreview
 import com.example.ui.media.ExportOptions
+import com.example.ui.media.LiveCutout
 import com.example.ui.media.MediaProbe
 import com.example.ui.media.ProjectState
 import com.example.ui.media.ProjectStore
@@ -69,6 +71,8 @@ import kotlin.math.abs
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 6f
 private const val STICKER_MS = 3000L
+// Leaving the editor needs a second press within this time
+private const val EXIT_WINDOW_MS = 2000L
 
 private val ActiveBorder = Color(0xFFFF5238)
 private val InactiveBorder = Color(0xFF2A2A38)
@@ -118,10 +122,26 @@ fun EditorScreen(
     // Colour adjust and colour effects are separate panels; only one is open at a time
     var showAdjust by rememberSaveable { mutableStateOf(false) }
     var showEffects by rememberSaveable { mutableStateOf(false) }
+    // Live background removal on the preview (Remove BG tool)
+    var showLiveCutout by rememberSaveable { mutableStateOf(false) }
     var showStickerLibrary by remember { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
     var textEditIndex by remember { mutableIntStateOf(-1) }
+    // Time of the last press that tried to leave the editor
+    var lastExitPress by remember { mutableLongStateOf(0L) }
     val timelineScroll = rememberScrollState()
+
+    // Leaving the editor needs two presses: the first one only shows a hint
+    val onExit: () -> Unit = {
+        val now = System.currentTimeMillis()
+        if (now - lastExitPress < EXIT_WINDOW_MS) {
+            onNavigateBack()
+        } else {
+            lastExitPress = now
+            Toast.makeText(context, "আবার চাপলে এডিটর থেকে বের হবে", Toast.LENGTH_SHORT).show()
+        }
+    }
+    BackHandler { onExit() }
 
     // Only one of text / sticker is selected at a time
     LaunchedEffect(selectedText) {
@@ -363,7 +383,7 @@ fun EditorScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onNavigateBack) {
+            IconButton(onClick = onExit) {
                 Icon(Icons.Default.Close, contentDescription = "Close Editor", tint = Color.White)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -435,6 +455,15 @@ fun EditorScreen(
                                 modifier = mediaModifier
                             )
                         }
+                        // Remove BG on: the subject is cut out live, the background becomes black
+                        if (showLiveCutout) {
+                            LiveCutout(
+                                sources = sources,
+                                segments = segments,
+                                playheadMs = playhead,
+                                modifier = mediaModifier
+                            )
+                        }
                     } else {
                         // No video yet: an empty black frame with an import button (no default picture)
                         Button(
@@ -500,6 +529,7 @@ fun EditorScreen(
                     stickerMode -> "Sticker ${selectedSticker + 1}"
                     audioMode -> "Audio ${selectedAudio + 1}"
                     colourPanelOpen -> "Colour"
+                    showLiveCutout -> "Remove BG"
                     hasSelection && selectedClip != null && abs(selectedClip.speed - 1f) > 0.01f ->
                         "Clip ${selected + 1} · ${formatSpeed(selectedClip.speed)}"
                     hasSelection -> "Clip ${selected + 1}"
@@ -981,21 +1011,31 @@ fun EditorScreen(
                     }
                 }
                 item {
-                    // Remove BG: photo or video cut-out (the same dialog as Sticker)
+                    // Live background removal on the preview: tap once to turn it on, again to turn it off
                     ToolButton("Remove BG", Icons.Default.AutoFixNormal, enabled = hasVideo && videoTools) {
-                        showStickerLibrary = true
+                        showLiveCutout = !showLiveCutout
+                        if (showLiveCutout) {
+                            showAdjust = false
+                            showEffects = false
+                        }
                     }
                 }
                 item {
                     ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
                         showAdjust = !showAdjust
-                        if (showAdjust) showEffects = false
+                        if (showAdjust) {
+                            showEffects = false
+                            showLiveCutout = false
+                        }
                     }
                 }
                 item {
                     ToolButton("Effects", Icons.Default.Palette, enabled = hasVideo && videoTools) {
                         showEffects = !showEffects
-                        if (showEffects) showAdjust = false
+                        if (showEffects) {
+                            showAdjust = false
+                            showLiveCutout = false
+                        }
                     }
                 }
                 item {
@@ -1057,7 +1097,7 @@ fun EditorScreen(
         }
     }
 
-    // --- STICKER LIBRARY (built-in stickers, Remove BG, or import from the phone) ---
+    // --- STICKER LIBRARY (built-in stickers, or import from the phone) ---
     if (showStickerLibrary) {
         StickerLibraryDialog(
             onPick = { uri ->
