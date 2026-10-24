@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -63,11 +64,14 @@ private data class VideoPiece(
     val tlEnd: Long
 )
 
+/** How often the export checks a transition (every 50 ms). */
+private const val TRANSITION_STEP_MS = 50L
+
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Clip speed and volume, the colour adjustment, text overlays, photos (full frame), picture-in-picture,
- * stickers and animated pictures are all burned into the video. Overlapping audio clips are placed in
- * separate sequences, so Media3 mixes them. Must be started from the main thread.
+ * Clip speed and volume, the colour adjustment, transitions, text overlays, photos (full frame),
+ * picture-in-picture, stickers and animated pictures are all burned into the video. Overlapping audio
+ * clips are placed in separate sequences, so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -110,8 +114,8 @@ class TimelineExporter(private val context: Context) {
 
     /**
      * Cuts every video segment wherever a text or picture starts or ends, wherever a text's animation
-     * changes, and every animation frame of an animated picture. Inside one piece every overlay is fixed.
-     * Source positions are converted with each clip's speed.
+     * changes, wherever an animated picture changes frame and during every transition. Inside one piece
+     * every overlay is fixed. Source positions are converted with each clip's speed.
      */
     private fun buildPieces(
         segments: List<Segment>,
@@ -138,6 +142,20 @@ class TimelineExporter(private val context: Context) {
                     t += frameMs
                 }
             }
+        }
+        // transitions: a cut every step while the transition plays
+        var segStart = 0L
+        for ((i, seg) in segments.withIndex()) {
+            if (i > 0 && TransitionStore.get(seg) != "none") {
+                val window = min(TransitionStore.LENGTH_MS, seg.durationMs)
+                var t = segStart
+                while (t < segStart + window) {
+                    raw.add(t)
+                    t += TRANSITION_STEP_MS
+                }
+                raw.add(segStart + window)
+            }
+            segStart += seg.durationMs
         }
         val breaks = raw.filter { it in 0L..totalMs }.distinct().sorted()
 
@@ -229,6 +247,14 @@ class TimelineExporter(private val context: Context) {
         val tempFile = File(tempDir, "render_${System.currentTimeMillis()}.mp4")
         val totalMs = segments.sumOf { it.durationMs }
 
+        // where each clip starts on the timeline
+        val segStarts = ArrayList<Long>()
+        var acc = 0L
+        for (s in segments) {
+            segStarts.add(acc)
+            acc += s.durationMs
+        }
+
         // ---- Video sequence: cut at overlay boundaries; each clip keeps its speed and sound level ----
         val texts = TextTrack.texts.value
         val stickers = StickerTrack.stickers.value
@@ -256,6 +282,19 @@ class TimelineExporter(private val context: Context) {
             effects.addAll(adjustEffects(colour))
 
             val overlays = mutableListOf<TextureOverlay>()
+
+            // transition: the clip starting here blends with the clip before it
+            val idx = segments.indexOfFirst { it === p.seg }
+            if (idx > 0) {
+                val start = segStarts[idx]
+                val type = TransitionStore.get(p.seg)
+                val local = mid - start
+                if (type != "none" && local >= 0L && local < TransitionStore.LENGTH_MS) {
+                    val prev = segments[idx - 1]
+                    transitionOverlay(type, prev, sources, local, frameW, frameH, bitmapCache)?.let { overlays.add(it) }
+                }
+            }
+
             for (t in texts) {
                 val st = TextAnimMath.stateAt(t, mid) ?: continue
                 val overlay = overlayFor(t, st, frameW, frameH, previewWidthDp, bitmapCache)
@@ -346,6 +385,66 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
+     * One transition frame. [local] is the time since the transition started (0..LENGTH_MS).
+     * The layer fades from full strength to nothing over the transition.
+     */
+    @OptIn(UnstableApi::class)
+    private fun transitionOverlay(
+        type: String,
+        prev: Segment,
+        sources: List<Source>,
+        local: Long,
+        frameW: Float,
+        frameH: Float,
+        cache: HashMap<String, Bitmap>
+    ): BitmapOverlay? {
+        val k = (local.toFloat() / TransitionStore.LENGTH_MS).coerceIn(0f, 1f)
+        val alpha = 1f - k
+        if (alpha < 0.02f) return null
+        val fw = frameW.toInt().coerceAtLeast(1)
+        val fh = frameH.toInt().coerceAtLeast(1)
+        val bmp: Bitmap = when (type) {
+            "flash" -> solid(cache, "flash_white", fw, fh, AndroidColor.WHITE)
+            "fade_black" -> solid(cache, "fade_black", fw, fh, AndroidColor.BLACK)
+            "dissolve" -> {
+                val key = "dissolve|${prev.source}|${prev.endMs}|$fw|$fh"
+                cache[key] ?: lastFrame(prev, sources, fw, fh)?.also { cache[key] = it } ?: return null
+            }
+            else -> return null
+        }
+        val settings = OverlaySettings.Builder()
+            .setBackgroundFrameAnchor(0f, 0f)
+            .setAlphaScale(alpha)
+            .build()
+        return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
+    }
+
+    /** A plain colour the size of the frame. */
+    private fun solid(cache: HashMap<String, Bitmap>, key: String, fw: Int, fh: Int, color: Int): Bitmap {
+        return cache.getOrPut("solid|$key|$fw|$fh") {
+            Bitmap.createBitmap(fw, fh, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
+        }
+    }
+
+    /** The last frame of [prev], cut to the frame size. */
+    private fun lastFrame(prev: Segment, sources: List<Source>, fw: Int, fh: Int): Bitmap? {
+        val uri = sources.getOrNull(prev.source)?.uri ?: return null
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            val frame = retriever.getFrameAtTime(
+                (prev.endMs - 40L).coerceAtLeast(0L) * 1000L,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            ) ?: return null
+            coverCrop(frame, fw, fh)
+        } catch (e: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    /**
      * One text overlay at one moment, placed where it appears in the preview.
      * [frameW] x [frameH] is the exported frame in pixels. The preview width [previewWidthDp] is
      * mapped onto the frame width, so sizes are the same in the preview and in the export.
@@ -426,14 +525,16 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * A photo for the full frame: scaled to cover the frame, then cut to exactly the frame size
-     * (the centre is kept, the same as the preview's crop). Returns null if the file cannot be read.
+     * A photo for the full frame. Returns null if the file cannot be read.
      */
     private fun loadPhoto(picture: String, frameW: Float, frameH: Float): Bitmap? {
         val path = Uri.parse(picture).path ?: return null
         val src = BitmapFactory.decodeFile(path) ?: return null
-        val fw = frameW.toInt().coerceAtLeast(1)
-        val fh = frameH.toInt().coerceAtLeast(1)
+        return coverCrop(src, frameW.toInt().coerceAtLeast(1), frameH.toInt().coerceAtLeast(1))
+    }
+
+    /** Scales [src] to cover a [fw] x [fh] frame and keeps the centre (the same crop the preview shows). */
+    private fun coverCrop(src: Bitmap, fw: Int, fh: Int): Bitmap {
         val scale = maxOf(fw.toFloat() / src.width, fh.toFloat() / src.height)
         val sw = (src.width * scale).toInt().coerceAtLeast(fw)
         val sh = (src.height * scale).toInt().coerceAtLeast(fh)
