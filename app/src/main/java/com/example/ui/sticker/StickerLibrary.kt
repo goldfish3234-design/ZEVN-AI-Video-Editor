@@ -19,8 +19,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,7 +33,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.media.CutoutVideo
 import com.example.ui.media.ImageImport
+import com.example.ui.media.MediaProbe
 import com.example.ui.media.TimelineModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -164,8 +170,11 @@ object StickerLibrary {
 }
 
 /**
- * Grid of built-in stickers. Tap one to place it on the preview at the playhead.
- * "Import from phone" picks a picture here, checks it, and adds it as a sticker.
+ * Stickers and picture imports.
+ * - Tap a sticker to place it.
+ * - Photo (full screen): a picture that fills the frame for its time on the timeline, like a video clip.
+ * - Picture-in-picture: a small picture in a corner, which can be moved and resized.
+ * - Video picture-in-picture: a video (up to 10 s) that plays small in a corner.
  */
 @Composable
 fun StickerLibraryDialog(
@@ -176,15 +185,21 @@ fun StickerLibraryDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val items = remember { StickerLibrary.items(context) }
+    // Which kind of picture the next picked image becomes
+    var pendingMode by remember { mutableStateOf(LayerMode.PHOTO) }
+    // Video picture-in-picture progress: -1 = idle, otherwise 0..100
+    var videoProgress by remember { mutableIntStateOf(-1) }
 
-    val importPicker = rememberLauncherForActivityResult(
+    val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
+            val mode = pendingMode
             scope.launch {
                 val copied = withContext(Dispatchers.IO) { ImageImport.copy(context, uri) }
                 if (copied != null) {
-                    StickerTrack.add(copied, TimelineModel.playheadMs.value, 3000L)
+                    val length = if (mode == LayerMode.PHOTO) 5000L else 3000L
+                    StickerTrack.add(copied, TimelineModel.playheadMs.value, length, mode)
                     onDismiss()
                 } else {
                     Toast.makeText(context, "এই ছবিটি লোড করা যায়নি, অন্য ছবি বেছে নিন", Toast.LENGTH_LONG).show()
@@ -193,10 +208,33 @@ fun StickerLibraryDialog(
         }
     }
 
+    val videoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && videoProgress < 0) {
+            videoProgress = 0
+            scope.launch {
+                val duration = withContext(Dispatchers.IO) { MediaProbe.durationMs(context, uri) }
+                val frames = withContext(Dispatchers.IO) {
+                    CutoutVideo.generate(context, uri, 0L, duration, removeBg = false) { p ->
+                        scope.launch { videoProgress = p }
+                    }
+                }
+                videoProgress = -1
+                if (frames != null) {
+                    StickerTrack.addAnimated(frames, CutoutVideo.FPS, TimelineModel.playheadMs.value, LayerMode.PIP)
+                    onDismiss()
+                } else {
+                    Toast.makeText(context, "এই ভিডিওটি লোড করা যায়নি", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF161622),
-        title = { Text("Stickers", color = Color.White, fontSize = 16.sp) },
+        title = { Text("Stickers & pictures", color = Color.White, fontSize = 16.sp) },
         text = {
             Column {
                 items.chunked(4).forEach { row ->
@@ -225,9 +263,37 @@ fun StickerLibraryDialog(
                         repeat(4 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
                     }
                 }
+
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = { importPicker.launch(arrayOf("image/*")) }) {
-                    Text("Import from phone", fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = {
+                        pendingMode = LayerMode.PHOTO
+                        imagePicker.launch(arrayOf("image/*"))
+                    },
+                    enabled = videoProgress < 0
+                ) {
+                    Text("Import photo (full screen)", fontSize = 12.sp)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        pendingMode = LayerMode.PIP
+                        imagePicker.launch(arrayOf("image/*"))
+                    },
+                    enabled = videoProgress < 0
+                ) {
+                    Text("Import picture-in-picture", fontSize = 12.sp)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = { videoPicker.launch(arrayOf("video/*")) },
+                    enabled = videoProgress < 0
+                ) {
+                    Text(
+                        if (videoProgress >= 0) "ভিডিও তৈরি হচ্ছে... $videoProgress%"
+                        else "Video picture-in-picture (up to 10 s)",
+                        fontSize = 12.sp
+                    )
                 }
             }
         },
