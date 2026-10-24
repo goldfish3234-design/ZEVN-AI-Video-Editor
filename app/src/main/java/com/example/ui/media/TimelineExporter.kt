@@ -31,6 +31,7 @@ import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
+import com.example.ui.sticker.LayerMode
 import com.example.ui.sticker.StickerClip
 import com.example.ui.sticker.StickerTrack
 import com.example.ui.text.TextAnimMath
@@ -64,9 +65,9 @@ private data class VideoPiece(
 
 /**
  * Renders the timeline to an MP4 file (and copies it to Movies/ZEVN), and extracts audio from a clip.
- * Clip speed and volume, the colour adjustment (brightness, contrast, saturation, filter), text overlays,
- * sticker/image overlays and animated cut-outs are all burned into the video. Overlapping audio clips
- * are placed in separate sequences, so Media3 mixes them. Must be started from the main thread.
+ * Clip speed and volume, the colour adjustment, text overlays, photos (full frame), picture-in-picture,
+ * stickers and animated pictures are all burned into the video. Overlapping audio clips are placed in
+ * separate sequences, so Media3 mixes them. Must be started from the main thread.
  */
 class TimelineExporter(private val context: Context) {
 
@@ -108,8 +109,8 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * Cuts every video segment wherever a text or sticker starts or ends, wherever a text's animation
-     * changes, and every animation frame of an animated cut-out. Inside one piece every overlay is fixed.
+     * Cuts every video segment wherever a text or picture starts or ends, wherever a text's animation
+     * changes, and every animation frame of an animated picture. Inside one piece every overlay is fixed.
      * Source positions are converted with each clip's speed.
      */
     private fun buildPieces(
@@ -262,9 +263,9 @@ class TimelineExporter(private val context: Context) {
             }
             for (s in stickers) {
                 if (mid < s.startMs || mid >= s.startMs + s.durationMs) continue
-                // an animated cut-out shows the frame for this moment
+                // an animated picture shows the frame for this moment
                 val picture = StickerTrack.frameUriAt(s, mid)
-                val overlay = stickerOverlay(s, picture, frameW, frameH, bitmapCache)
+                val overlay = pictureOverlay(s, picture, frameW, frameH, bitmapCache)
                 if (overlay != null) overlays.add(overlay)
             }
             if (overlays.isNotEmpty()) {
@@ -383,18 +384,28 @@ class TimelineExporter(private val context: Context) {
     }
 
     /**
-     * One sticker/image overlay. [picture] is the file to show (for an animated cut-out, the frame of this moment).
-     * The picture is scaled to [StickerClip.sizeFrac] of the frame width and placed at the same position
-     * as in the preview (top-left corner at xFrac, yFrac).
+     * One picture layer at one moment. [picture] is the file to show (for an animated picture, the frame of this moment).
+     * A photo fills the whole frame. A sticker or picture-in-picture is scaled to [StickerClip.sizeFrac] of the
+     * frame width and placed at the same position as in the preview (top-left corner at xFrac, yFrac).
      */
     @OptIn(UnstableApi::class)
-    private fun stickerOverlay(
+    private fun pictureOverlay(
         s: StickerClip,
         picture: String,
         frameW: Float,
         frameH: Float,
         cache: HashMap<String, Bitmap>
     ): BitmapOverlay? {
+        if (s.mode == LayerMode.PHOTO) {
+            val key = "photo|$picture|${frameW.toInt()}x${frameH.toInt()}"
+            val photo = cache[key] ?: loadPhoto(picture, frameW, frameH)?.also { cache[key] = it } ?: return null
+            // the photo is exactly the frame size, so it sits in the centre and covers the whole frame
+            val settings = OverlaySettings.Builder()
+                .setBackgroundFrameAnchor(0f, 0f)
+                .build()
+            return BitmapOverlay.createStaticBitmapOverlay(photo, settings)
+        }
+
         val key = "p|$picture|${s.sizeFrac}"
         val bmp = cache[key] ?: loadPicture(picture, s.sizeFrac, frameW)?.also { cache[key] = it } ?: return null
         val cx = s.xFrac + (bmp.width / frameW) / 2f
@@ -405,13 +416,31 @@ class TimelineExporter(private val context: Context) {
         return BitmapOverlay.createStaticBitmapOverlay(bmp, settings)
     }
 
-    /** Loads a picture and scales it to the export size. Returns null if the file cannot be read. */
+    /** Loads a sticker or picture-in-picture and scales it to the export size. Returns null if the file cannot be read. */
     private fun loadPicture(picture: String, sizeFrac: Float, frameW: Float): Bitmap? {
         val path = Uri.parse(picture).path ?: return null
         val decoded = BitmapFactory.decodeFile(path) ?: return null
         val targetW = (frameW * sizeFrac).toInt().coerceAtLeast(1)
         val targetH = (decoded.height.toFloat() * targetW / decoded.width.toFloat()).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+    }
+
+    /**
+     * A photo for the full frame: scaled to cover the frame, then cut to exactly the frame size
+     * (the centre is kept, the same as the preview's crop). Returns null if the file cannot be read.
+     */
+    private fun loadPhoto(picture: String, frameW: Float, frameH: Float): Bitmap? {
+        val path = Uri.parse(picture).path ?: return null
+        val src = BitmapFactory.decodeFile(path) ?: return null
+        val fw = frameW.toInt().coerceAtLeast(1)
+        val fh = frameH.toInt().coerceAtLeast(1)
+        val scale = maxOf(fw.toFloat() / src.width, fh.toFloat() / src.height)
+        val sw = (src.width * scale).toInt().coerceAtLeast(fw)
+        val sh = (src.height * scale).toInt().coerceAtLeast(fh)
+        val scaled = Bitmap.createScaledBitmap(src, sw, sh, true)
+        val x = ((sw - fw) / 2).coerceAtLeast(0)
+        val y = ((sh - fh) / 2).coerceAtLeast(0)
+        return Bitmap.createBitmap(scaled, x, y, fw, fh)
     }
 
     /**
