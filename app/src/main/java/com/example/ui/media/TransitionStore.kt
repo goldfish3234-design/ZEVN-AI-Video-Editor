@@ -28,7 +28,8 @@ object TransitionStore {
     private val _map = MutableStateFlow<Map<String, String>>(emptyMap())
     val map: StateFlow<Map<String, String>> = _map.asStateFlow()
 
-    private fun keyOf(s: Segment): String = "${s.source}|${s.startMs}|${s.endMs}"
+    /** The key that identifies a clip in the transition map. */
+    fun keyOf(s: Segment): String = "${s.source}|${s.startMs}|${s.endMs}"
 
     /** The transition at the start of [s] ("none" if there is none). */
     fun get(s: Segment): String = _map.value[keyOf(s)] ?: "none"
