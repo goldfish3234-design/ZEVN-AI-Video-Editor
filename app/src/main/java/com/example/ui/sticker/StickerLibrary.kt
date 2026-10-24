@@ -7,6 +7,9 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,6 +29,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.ui.media.ImageImport
+import com.example.ui.media.TimelineModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.PI
@@ -156,7 +165,7 @@ object StickerLibrary {
 
 /**
  * Grid of built-in stickers. Tap one to place it on the preview at the playhead.
- * [onImport] opens the phone's picker for your own picture.
+ * "Import from phone" picks a picture here, checks it, and adds it as a sticker.
  */
 @Composable
 fun StickerLibraryDialog(
@@ -165,7 +174,24 @@ fun StickerLibraryDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val items = remember { StickerLibrary.items(context) }
+
+    val importPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val copied = withContext(Dispatchers.IO) { ImageImport.copy(context, uri) }
+                if (copied != null) {
+                    StickerTrack.add(copied, TimelineModel.playheadMs.value, 3000L)
+                    onDismiss()
+                } else {
+                    Toast.makeText(context, "এই ছবিটি লোড করা যায়নি, অন্য ছবি বেছে নিন", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -200,7 +226,7 @@ fun StickerLibraryDialog(
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = onImport) {
+                OutlinedButton(onClick = { importPicker.launch(arrayOf("image/*")) }) {
                     Text("Import from phone", fontSize = 12.sp)
                 }
             }
