@@ -31,6 +31,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.MusicTrackView
@@ -76,10 +77,21 @@ private const val STICKER_MS = 3000L
 // Leaving the editor needs a second press within this time
 private const val EXIT_WINDOW_MS = 2000L
 
+// Track row heights (the same heights are used by the labels on the left)
+private val VideoRowH = 56.dp
+private val AudioRowH = 36.dp
+private val TextRowH = 40.dp
+private val OverlayRowH = 36.dp
+private val RowGap = 6.dp
+private val LabelW = 64.dp
+
 private val ActiveBorder = Color(0xFFFF5238)
 private val InactiveBorder = Color(0xFF2A2A38)
 private val TextBorder = Color(0xFFFFB800)
 private val StickerBorder = Color(0xFF7CE38B)
+private val BarBg = Color(0xFF111116)
+private val LabelBg = Color(0xFF1B1B25)
+private val Muted = Color(0xFF8A8AA0)
 
 @Composable
 fun EditorScreen(
@@ -116,18 +128,15 @@ fun EditorScreen(
     var autoCutBusy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
-    // The volume bar only appears after the Volume tool is pressed
+    // Which category the tool strip shows: edit, audio, text, effects, overlay, filter
+    var tab by rememberSaveable { mutableStateOf("edit") }
+    // Panels and toggles (only one colour panel at a time)
     var showVolumeBar by rememberSaveable { mutableStateOf(false) }
-    // The speed choices only appear after the Speed tool is pressed
     var showSpeedBar by rememberSaveable { mutableStateOf(false) }
-    // The sticker size bar only appears after the Size tool is pressed
     var showStickerSize by rememberSaveable { mutableStateOf(false) }
-    // Colour adjust and colour effects are separate panels; only one is open at a time
     var showAdjust by rememberSaveable { mutableStateOf(false) }
     var showEffects by rememberSaveable { mutableStateOf(false) }
-    // Live background removal on the preview (Remove BG tool)
     var showLiveCutout by rememberSaveable { mutableStateOf(false) }
-    // Transition choices for the selected clip (Transition tool)
     var showTransitions by rememberSaveable { mutableStateOf(false) }
     var showStickerLibrary by remember { mutableStateOf(false) }
     var showTextDialog by remember { mutableStateOf(false) }
@@ -150,10 +159,19 @@ fun EditorScreen(
 
     // Only one of text / sticker is selected at a time
     LaunchedEffect(selectedText) {
-        if (selectedText >= 0) StickerTrack.select(-1)
+        if (selectedText >= 0) {
+            StickerTrack.select(-1)
+            tab = "text"
+        }
     }
     LaunchedEffect(selectedSticker) {
-        if (selectedSticker >= 0) TextTrack.select(-1)
+        if (selectedSticker >= 0) {
+            TextTrack.select(-1)
+            tab = "overlay"
+        }
+    }
+    LaunchedEffect(selectedAudio) {
+        if (selectedAudio >= 0) tab = "audio"
     }
 
     // Open the current project once: timeline (if empty), text, stickers, colour and transitions
@@ -382,6 +400,14 @@ fun EditorScreen(
     } else {
         0f
     }
+    val categories = listOf(
+        Triple("edit", "Edit", Icons.Default.ContentCut),
+        Triple("audio", "Audio", Icons.Default.MusicNote),
+        Triple("text", "Text", Icons.Default.TextFields),
+        Triple("effects", "Effects", Icons.Default.Palette),
+        Triple("overlay", "Overlay", Icons.Default.Image),
+        Triple("filter", "Filter", Icons.Default.Tune)
+    )
 
     Column(
         modifier = Modifier
@@ -459,7 +485,6 @@ fun EditorScreen(
 
                     if (hasVideo) {
                         VideoPreview(sources = sources, segments = segments, modifier = mediaModifier)
-                        // While a colour panel is open, the frame under the playhead shows the colours live
                         if (colourPanelOpen) {
                             ColorPreview(
                                 sources = sources,
@@ -469,7 +494,6 @@ fun EditorScreen(
                                 modifier = mediaModifier
                             )
                         }
-                        // Remove BG on: the subject is cut out live, the background becomes black
                         if (showLiveCutout) {
                             LiveCutout(
                                 sources = sources,
@@ -478,7 +502,6 @@ fun EditorScreen(
                                 modifier = mediaModifier
                             )
                         }
-                        // Transition: shown on the preview while the playhead is inside it
                         TransitionPreview(
                             sources = sources,
                             segments = segments,
@@ -491,8 +514,7 @@ fun EditorScreen(
                             onClick = launchVideoPicker,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5238)),
                             shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .align(Alignment.Center)
+                            modifier = Modifier.align(Alignment.Center)
                         ) {
                             Icon(Icons.Default.VideoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -521,18 +543,18 @@ fun EditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 4.dp),
+                .padding(horizontal = 20.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
                 text = "${formatMs(playhead)} / ${formatMs(total)}",
                 fontSize = 12.sp,
-                color = Color(0xFFA0A0B2)
+                color = Muted
             )
             Box(
                 modifier = Modifier
-                    .size(42.dp)
+                    .size(40.dp)
                     .clip(CircleShape)
                     .background(Color.White)
                     .clickable(enabled = hasVideo) { TimelineModel.togglePlaying() },
@@ -547,7 +569,7 @@ fun EditorScreen(
             Text(
                 text = when {
                     textMode -> "Text ${selectedText + 1}"
-                    stickerMode -> "Sticker ${selectedSticker + 1}"
+                    stickerMode -> "Overlay ${selectedSticker + 1}"
                     audioMode -> "Audio ${selectedAudio + 1}"
                     colourPanelOpen -> "Colour"
                     showLiveCutout -> "Remove BG"
@@ -557,7 +579,7 @@ fun EditorScreen(
                     else -> "No clip"
                 },
                 fontSize = 12.sp,
-                color = Color(0xFFA0A0B2)
+                color = Muted
             )
         }
 
@@ -573,11 +595,11 @@ fun EditorScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
             )
         } else {
-            // --- ZOOM CONTROLS (buttons; pinch on the timeline also works) ---
+            // --- ZOOM CONTROLS ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = { zoom = (zoom - 0.5f).coerceAtLeast(MIN_ZOOM) }) {
@@ -599,475 +621,480 @@ fun EditorScreen(
                 )
             }
 
-            // --- TIMELINE (video + audio + text + stickers), pinch to zoom, scrolls when zoomed ---
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp)
-                    .pointerInput(Unit) {
-                        // Two-finger pinch changes the zoom. One finger is left to the tracks (seek / move / trim).
-                        awaitEachGesture {
-                            awaitFirstDown(pass = PointerEventPass.Initial)
-                            var lastDistance = 0f
-                            do {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                val pressed = event.changes.filter { it.pressed }
-                                if (pressed.size >= 2) {
-                                    val distance = (pressed[0].position - pressed[1].position).getDistance()
-                                    if (lastDistance > 0f && distance > 0f) {
-                                        val factor = distance / lastDistance
-                                        zoom = (zoom * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
-                                    }
-                                    lastDistance = distance
-                                    event.changes.forEach { it.consume() }
-                                } else {
-                                    lastDistance = 0f
-                                }
-                            } while (event.changes.any { it.pressed })
-                        }
-                    }
-            ) {
-                val contentWidth = maxWidth * zoom
-                val playFrac = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
-
-                Box(modifier = Modifier.horizontalScroll(timelineScroll)) {
-                    Column(modifier = Modifier.width(contentWidth)) {
-                        // The track being edited has a bright border
-                        TimelineView(
-                            segments = segments,
-                            selectedIndex = selected,
-                            playheadMs = playhead,
-                            totalMs = total,
-                            onTimeChosen = { t ->
-                                TextTrack.select(-1)
-                                StickerTrack.select(-1)
-                                TimelineModel.requestSeek(t)
-                                TimelineModel.selectAtTime(t)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    width = 2.dp,
-                                    color = if (videoTools) ActiveBorder else InactiveBorder,
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-                        )
-                        if (audioClips.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            MusicTrackView(
-                                clips = audioClips,
-                                totalMs = total,
-                                selectedIndex = selectedAudio,
-                                onSelect = { i ->
-                                    TextTrack.select(-1)
-                                    StickerTrack.select(-1)
-                                    TimelineModel.selectAudio(i)
-                                },
-                                onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
-                                onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
-                                onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(
-                                        width = 2.dp,
-                                        color = if (audioMode) ActiveBorder else InactiveBorder,
-                                        shape = RoundedCornerShape(10.dp)
-                                    )
-                            )
-                        }
-                        if (texts.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            TextTrackBar(
-                                texts = texts,
-                                totalMs = total,
-                                selectedIndex = selectedText,
-                                onSelect = { i -> TextTrack.select(i) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(
-                                        width = 2.dp,
-                                        color = if (textMode) TextBorder else InactiveBorder,
-                                        shape = RoundedCornerShape(10.dp)
-                                    )
-                            )
-                        }
-                        if (stickers.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            StickerTrackBar(
-                                stickers = stickers,
-                                totalMs = total,
-                                selectedIndex = selectedSticker,
-                                onSelect = { i -> StickerTrack.select(i) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(
-                                        width = 2.dp,
-                                        color = if (stickerMode) StickerBorder else InactiveBorder,
-                                        shape = RoundedCornerShape(10.dp)
-                                    )
-                            )
-                        }
-                    }
-
-                    // One playhead line across ALL tracks, with a handle on top
-                    Box(modifier = Modifier.matchParentSize()) {
-                        Box(
-                            modifier = Modifier
-                                .offset(x = contentWidth * playFrac - (3.dp / 2))
-                                .width(3.dp)
-                                .fillMaxHeight()
-                                .background(Color.White)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .offset(x = contentWidth * playFrac - 8.dp, y = (-4).dp)
-                                .size(16.dp)
-                                .clip(CircleShape)
-                                .background(Color.White)
-                        )
-                    }
-                }
-            }
-
-            // --- STICKER SIZE (only after the Size tool is pressed) ---
-            if (showStickerSize && stickerMode && stickerSel != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Sticker size", fontSize = 11.sp, color = Color.White)
-                    Slider(
-                        value = stickerSel.sizeFrac,
-                        onValueChange = { StickerTrack.setSize(selectedSticker, it) },
-                        valueRange = 0.05f..1f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF7CE38B),
-                            activeTrackColor = Color(0xFF7CE38B)
-                        ),
-                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                    )
-                    Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
-                }
-            }
-
-            // --- TRANSITION CHOICES (only after the Transition tool is pressed) ---
-            if (showTransitions && selectedClip != null && videoTools) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TransitionStore.TYPES.forEach { (key, label) ->
-                            val chosen = currentTransition == key
-                            Box(
-                                modifier = Modifier
-                                    .padding(end = 6.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
-                                    .clickable { TransitionStore.set(selectedClip, key) }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                    Text(
-                        if (selected == 0) "The first clip has nothing before it, so its transition is not shown"
-                        else "The transition plays at the start of this clip (0.5 s)",
-                        color = Color(0xFFA0A0B2),
-                        fontSize = 10.sp
-                    )
-                }
-            }
-
-            // --- SPEED CHOICES (only after the Speed tool is pressed) ---
-            if (showSpeedBar && selectedClip != null && videoTools) {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Speed", fontSize = 11.sp, color = Color.White)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            TimelineModel.SPEED_CHOICES.forEach { choice ->
-                                val chosen = abs(selectedClip.speed - choice) < 0.01f
-                                Box(
-                                    modifier = Modifier
-                                        .padding(end = 6.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
-                                        .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                                ) {
-                                    Text(
-                                        formatSpeed(choice),
-                                        color = Color.White,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // --- VOLUME BAR (only after the Volume button is pressed) ---
-            if (showVolumeBar) {
-                if (audioMode && audioSel != null) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Audio", fontSize = 11.sp, color = Color.White)
-                        Slider(
-                            value = audioSel.volume,
-                            onValueChange = { TimelineModel.setAudioVolume(selectedAudio, it) },
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFF5238),
-                                activeTrackColor = Color(0xFFFF5238)
-                            ),
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                        )
-                        Text("${(audioSel.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
-                    }
-                } else if (selectedClip != null && videoTools) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = {
-                            TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
-                        }) {
-                            Icon(
-                                imageVector = if (selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                                contentDescription = "Clip sound",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Text("Clip sound", fontSize = 11.sp, color = Color.White)
-                        Slider(
-                            value = selectedClip.volume,
-                            onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFF5238),
-                                activeTrackColor = Color(0xFFFF5238)
-                            ),
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                        )
-                        Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Color(0xFFA0A0B2))
-                    }
-                }
-            }
-
-            // Add audio, text and sticker
+            // --- TRACKS: labels on the left, the timeline on the right (pinch to zoom, scrolls when zoomed) ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.Top
             ) {
-                OutlinedButton(onClick = launchMusicPicker, enabled = hasVideo) {
-                    Icon(Icons.Default.MusicNote, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Audio", fontSize = 12.sp)
+                // Left: one label per track. A track row only exists when it has content (except video).
+                Column(modifier = Modifier.width(LabelW)) {
+                    TrackLabel(
+                        height = VideoRowH,
+                        icon = if (selectedClip != null && selectedClip.volume > 0f) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        text = "Mute clip",
+                        tint = Color.White,
+                        onClick = {
+                            if (selectedClip != null) {
+                                TimelineModel.setSegmentVolume(selected, if (selectedClip.volume > 0f) 0f else 1f)
+                            }
+                        }
+                    )
+                    if (audioClips.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(RowGap))
+                        TrackLabel(AudioRowH, Icons.Default.MusicNote, "Audio", Color(0xFFFF7A5C)) { tab = "audio" }
+                    }
+                    if (texts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(RowGap))
+                        TrackLabel(TextRowH, Icons.Default.TextFields, "Text", TextBorder) { tab = "text" }
+                    }
+                    if (stickers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(RowGap))
+                        TrackLabel(OverlayRowH, Icons.Default.Image, "Overlay", StickerBorder) { tab = "overlay" }
+                    }
                 }
-                OutlinedButton(onClick = {
-                    textEditIndex = -1
-                    showTextDialog = true
-                }, enabled = hasVideo) {
-                    Icon(Icons.Default.TextFields, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Text", fontSize = 12.sp)
-                }
-                OutlinedButton(onClick = { showStickerLibrary = true }, enabled = hasVideo) {
-                    Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Sticker", fontSize = 12.sp)
+                Spacer(modifier = Modifier.width(6.dp))
+
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(1f)
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(pass = PointerEventPass.Initial)
+                                var lastDistance = 0f
+                                do {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.size >= 2) {
+                                        val distance = (pressed[0].position - pressed[1].position).getDistance()
+                                        if (lastDistance > 0f && distance > 0f) {
+                                            val factor = distance / lastDistance
+                                            zoom = (zoom * factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                        }
+                                        lastDistance = distance
+                                        event.changes.forEach { it.consume() }
+                                    } else {
+                                        lastDistance = 0f
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        }
+                ) {
+                    val contentWidth = maxWidth * zoom
+                    val playFrac = if (total > 0L) (playhead.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+                    Box(modifier = Modifier.horizontalScroll(timelineScroll)) {
+                        Column(modifier = Modifier.width(contentWidth)) {
+                            Box(modifier = Modifier.height(VideoRowH)) {
+                                TimelineView(
+                                    segments = segments,
+                                    selectedIndex = selected,
+                                    playheadMs = playhead,
+                                    totalMs = total,
+                                    onTimeChosen = { t ->
+                                        TextTrack.select(-1)
+                                        StickerTrack.select(-1)
+                                        TimelineModel.requestSeek(t)
+                                        TimelineModel.selectAtTime(t)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(
+                                            width = 2.dp,
+                                            color = if (videoTools) ActiveBorder else InactiveBorder,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                )
+                            }
+                            if (audioClips.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(RowGap))
+                                Box(modifier = Modifier.height(AudioRowH)) {
+                                    MusicTrackView(
+                                        clips = audioClips,
+                                        totalMs = total,
+                                        selectedIndex = selectedAudio,
+                                        onSelect = { i ->
+                                            TextTrack.select(-1)
+                                            StickerTrack.select(-1)
+                                            TimelineModel.selectAudio(i)
+                                        },
+                                        onMoveBy = { i, delta -> TimelineModel.moveAudioBy(i, delta) },
+                                        onTrimStartBy = { i, delta -> TimelineModel.trimAudioStartBy(i, delta) },
+                                        onTrimEndBy = { i, delta -> TimelineModel.trimAudioEndBy(i, delta) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .border(
+                                                width = 2.dp,
+                                                color = if (audioMode) ActiveBorder else InactiveBorder,
+                                                shape = RoundedCornerShape(10.dp)
+                                            )
+                                    )
+                                }
+                            }
+                            if (texts.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(RowGap))
+                                Box(modifier = Modifier.height(TextRowH)) {
+                                    TextTrackBar(
+                                        texts = texts,
+                                        totalMs = total,
+                                        selectedIndex = selectedText,
+                                        onSelect = { i -> TextTrack.select(i) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .border(
+                                                width = 2.dp,
+                                                color = if (textMode) TextBorder else InactiveBorder,
+                                                shape = RoundedCornerShape(10.dp)
+                                            )
+                                    )
+                                }
+                            }
+                            if (stickers.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(RowGap))
+                                Box(modifier = Modifier.height(OverlayRowH)) {
+                                    StickerTrackBar(
+                                        stickers = stickers,
+                                        totalMs = total,
+                                        selectedIndex = selectedSticker,
+                                        onSelect = { i -> StickerTrack.select(i) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .border(
+                                                width = 2.dp,
+                                                color = if (stickerMode) StickerBorder else InactiveBorder,
+                                                shape = RoundedCornerShape(10.dp)
+                                            )
+                                    )
+                                }
+                            }
+                        }
+
+                        // One playhead line across ALL tracks, with a handle on top
+                        Box(modifier = Modifier.matchParentSize()) {
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = contentWidth * playFrac - (3.dp / 2))
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(Color.White)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = contentWidth * playFrac - 8.dp, y = (-4).dp)
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // --- ADJUST PANEL (colour: filters, brightness, contrast, saturation) ---
+        // --- PANELS (open only when their tool is pressed) ---
+        if (showStickerSize && stickerMode && stickerSel != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Size", fontSize = 11.sp, color = Color.White)
+                Slider(
+                    value = stickerSel.sizeFrac,
+                    onValueChange = { StickerTrack.setSize(selectedSticker, it) },
+                    valueRange = 0.05f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF7CE38B),
+                        activeTrackColor = Color(0xFF7CE38B)
+                    ),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text("${(stickerSel.sizeFrac * 100).toInt()}%", fontSize = 11.sp, color = Muted)
+            }
+        }
+
+        if (showTransitions && selectedClip != null && videoTools) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TransitionStore.TYPES.forEach { (key, label) ->
+                        val chosen = currentTransition == key
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                                .clickable { TransitionStore.set(selectedClip, key) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                Text(
+                    if (selected == 0) "The first clip has nothing before it, so its transition is not shown"
+                    else "The transition plays at the start of this clip (0.5 s)",
+                    color = Muted,
+                    fontSize = 10.sp
+                )
+            }
+        }
+
+        if (showSpeedBar && selectedClip != null && videoTools) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Speed", fontSize = 11.sp, color = Color.White)
+                Spacer(modifier = Modifier.width(8.dp))
+                TimelineModel.SPEED_CHOICES.forEach { choice ->
+                    val chosen = abs(selectedClip.speed - choice) < 0.01f
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (chosen) Color(0xFFFF5238) else Color(0xFF222230))
+                            .clickable { TimelineModel.setSegmentSpeed(selected, choice) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(formatSpeed(choice), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        if (showVolumeBar) {
+            if (audioMode && audioSel != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Audio", fontSize = 11.sp, color = Color.White)
+                    Slider(
+                        value = audioSel.volume,
+                        onValueChange = { TimelineModel.setAudioVolume(selectedAudio, it) },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFFFF5238),
+                            activeTrackColor = Color(0xFFFF5238)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    Text("${(audioSel.volume * 100).toInt()}%", fontSize = 11.sp, color = Muted)
+                }
+            } else if (selectedClip != null && videoTools) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Clip sound", fontSize = 11.sp, color = Color.White)
+                    Slider(
+                        value = selectedClip.volume,
+                        onValueChange = { TimelineModel.setSegmentVolume(selected, it) },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFFFF5238),
+                            activeTrackColor = Color(0xFFFF5238)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    Text("${(selectedClip.volume * 100).toInt()}%", fontSize = 11.sp, color = Muted)
+                }
+            }
+        }
+
         if (showAdjust && colourPanelOpen) {
-            VideoAdjustPanel(modifier = Modifier.padding(vertical = 4.dp))
+            VideoAdjustPanel(modifier = Modifier.padding(vertical = 2.dp))
         }
-
-        // --- EFFECTS PANEL (colour effects) ---
         if (showEffects && colourPanelOpen) {
-            VideoEffectsPanel(modifier = Modifier.padding(vertical = 4.dp))
+            VideoEffectsPanel(modifier = Modifier.padding(vertical = 2.dp))
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        // --- TOOL STRIP: the tools of the chosen category, in one scrolling row ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            when (tab) {
+                "edit" -> when {
+                    textMode -> {
+                        ToolButton("Edit text", Icons.Default.Edit, enabled = true) {
+                            textEditIndex = selectedText
+                            showTextDialog = true
+                        }
+                        ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                            textSel?.let { TextTrack.splitById(it.id, playhead) }
+                        }
+                        ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                            textTrimStartToPlayhead(selectedText, playhead)
+                        }
+                        ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                            textTrimEndToPlayhead(selectedText, playhead)
+                        }
+                        ToolButton("Duplicate", Icons.Default.ContentCopy, enabled = true) {
+                            TextTrack.duplicate(selectedText)
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            TextTrack.delete(selectedText)
+                        }
+                        ToolButton("Back", Icons.Default.VideoLibrary, enabled = true) {
+                            TextTrack.select(-1)
+                            TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                        }
+                    }
+                    stickerMode -> {
+                        ToolButton("Size", Icons.Default.Straighten, enabled = true, active = showStickerSize) {
+                            showStickerSize = !showStickerSize
+                        }
+                        ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                            StickerTrack.trimStartToPlayhead(selectedSticker, playhead)
+                        }
+                        ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                            StickerTrack.trimEndToPlayhead(selectedSticker, playhead)
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            StickerTrack.delete(selectedSticker)
+                        }
+                        ToolButton("Back", Icons.Default.VideoLibrary, enabled = true) {
+                            StickerTrack.select(-1)
+                            TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
+                        }
+                    }
+                    audioMode -> {
+                        ToolButton("Volume", Icons.Default.VolumeUp, enabled = true, active = showVolumeBar) {
+                            showVolumeBar = !showVolumeBar
+                        }
+                        ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                            TimelineModel.splitAudioAtPlayhead()
+                        }
+                        ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                            TimelineModel.trimAudioStartToPlayhead(selectedAudio)
+                        }
+                        ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                            TimelineModel.trimAudioEndToPlayhead(selectedAudio)
+                        }
+                        ToolButton("Copy", Icons.Default.ContentCopy, enabled = true) {
+                            TimelineModel.copyAudio(selectedAudio)
+                        }
+                        ToolButton("Cut", Icons.Default.ContentCut, enabled = true) {
+                            TimelineModel.cutAudio(selectedAudio)
+                        }
+                        ToolButton("Paste", Icons.Default.ContentPaste, enabled = true) {
+                            TimelineModel.pasteAudioAtPlayhead()
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            TimelineModel.deleteAudio(selectedAudio)
+                        }
+                    }
+                    else -> {
+                        ToolButton("AutoCut", Icons.Default.AutoAwesome, enabled = hasVideo && videoTools && !autoCutBusy) {
+                            runAutoCut()
+                        }
+                        ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo && videoTools) {
+                            TimelineModel.splitAtPlayhead()
+                        }
+                        ToolButton("Trim start", Icons.Default.FirstPage, enabled = hasSelection && videoTools) {
+                            TimelineModel.trimStartToPlayhead()
+                        }
+                        ToolButton("Trim end", Icons.Default.LastPage, enabled = hasSelection && videoTools) {
+                            TimelineModel.trimEndToPlayhead()
+                        }
+                        ToolButton("Copy", Icons.Default.ContentCopy, enabled = hasSelection && videoTools) {
+                            TimelineModel.copySelected()
+                        }
+                        ToolButton("Cut", Icons.Default.ContentCut, enabled = hasSelection && videoTools) {
+                            TimelineModel.cutSelected()
+                        }
+                        ToolButton("Paste", Icons.Default.ContentPaste, enabled = hasVideo && videoTools) {
+                            TimelineModel.pasteAtPlayhead()
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = hasSelection && videoTools) {
+                            TimelineModel.deleteSelected()
+                        }
+                        ToolButton("Speed", Icons.Default.Speed, enabled = hasSelection && videoTools, active = showSpeedBar) {
+                            showSpeedBar = !showSpeedBar
+                        }
+                        ToolButton("Volume", Icons.Default.VolumeUp, enabled = hasSelection && videoTools, active = showVolumeBar) {
+                            showVolumeBar = !showVolumeBar
+                        }
+                        ToolButton("Extract audio", Icons.Default.MusicNote, enabled = hasSelection && videoTools && !extracting) {
+                            extractAudio()
+                        }
+                        ToolButton("Rotate", Icons.Default.RotateRight, enabled = true) {
+                            viewModel.rotate()
+                        }
+                    }
+                }
 
-        // --- TOOLS (depend on the selected track) ---
-        if (textMode) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                item {
-                    ToolButton("Edit text", Icons.Default.Edit, enabled = true) {
-                        textEditIndex = selectedText
-                        showTextDialog = true
+                "audio" -> {
+                    ToolButton("Add audio", Icons.Default.Add, enabled = hasVideo) {
+                        launchMusicPicker()
                     }
-                }
-                item {
-                    ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
-                        textSel?.let { TextTrack.splitById(it.id, playhead) }
+                    ToolButton("Extract audio", Icons.Default.MusicNote, enabled = hasSelection && videoTools && !extracting) {
+                        extractAudio()
                     }
-                }
-                item {
-                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
-                        textTrimStartToPlayhead(selectedText, playhead)
-                    }
-                }
-                item {
-                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
-                        textTrimEndToPlayhead(selectedText, playhead)
-                    }
-                }
-                item {
-                    ToolButton("Duplicate", Icons.Default.ContentCopy, enabled = true) {
-                        TextTrack.duplicate(selectedText)
-                    }
-                }
-                item {
-                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
-                        TextTrack.delete(selectedText)
-                    }
-                }
-                item {
-                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
-                        TextTrack.select(-1)
-                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
-                    }
-                }
-            }
-        } else if (stickerMode) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                item {
-                    ToolButton("Size", Icons.Default.Straighten, enabled = true) {
-                        showStickerSize = !showStickerSize
-                    }
-                }
-                item {
-                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
-                        StickerTrack.trimStartToPlayhead(selectedSticker, playhead)
-                    }
-                }
-                item {
-                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
-                        StickerTrack.trimEndToPlayhead(selectedSticker, playhead)
-                    }
-                }
-                item {
-                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
-                        StickerTrack.delete(selectedSticker)
-                    }
-                }
-                item {
-                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
-                        StickerTrack.select(-1)
-                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
-                    }
-                }
-            }
-        } else if (audioMode) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                item {
-                    ToolButton("Volume", Icons.Default.VolumeUp, enabled = true) {
+                    ToolButton("Clip sound", Icons.Default.VolumeUp, enabled = hasSelection && videoTools, active = showVolumeBar) {
                         showVolumeBar = !showVolumeBar
                     }
-                }
-                item {
-                    ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
-                        TimelineModel.splitAudioAtPlayhead()
+                    if (audioMode) {
+                        ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                            TimelineModel.splitAudioAtPlayhead()
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            TimelineModel.deleteAudio(selectedAudio)
+                        }
                     }
                 }
-                item {
-                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
-                        TimelineModel.trimAudioStartToPlayhead(selectedAudio)
+
+                "text" -> {
+                    ToolButton("Add text", Icons.Default.TextFields, enabled = hasVideo) {
+                        textEditIndex = -1
+                        showTextDialog = true
+                    }
+                    if (textMode) {
+                        ToolButton("Edit text", Icons.Default.Edit, enabled = true) {
+                            textEditIndex = selectedText
+                            showTextDialog = true
+                        }
+                        ToolButton("Split", Icons.Default.CallSplit, enabled = true) {
+                            textSel?.let { TextTrack.splitById(it.id, playhead) }
+                        }
+                        ToolButton("Duplicate", Icons.Default.ContentCopy, enabled = true) {
+                            TextTrack.duplicate(selectedText)
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            TextTrack.delete(selectedText)
+                        }
                     }
                 }
-                item {
-                    ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
-                        TimelineModel.trimAudioEndToPlayhead(selectedAudio)
+
+                "effects" -> {
+                    ToolButton("Effects", Icons.Default.Palette, enabled = hasVideo && videoTools, active = showEffects) {
+                        showEffects = !showEffects
+                        if (showEffects) {
+                            showAdjust = false
+                            showLiveCutout = false
+                            showTransitions = false
+                        }
                     }
-                }
-                item {
-                    ToolButton("Copy", Icons.Default.ContentCopy, enabled = true) {
-                        TimelineModel.copyAudio(selectedAudio)
-                    }
-                }
-                item {
-                    ToolButton("Cut", Icons.Default.ContentCut, enabled = true) {
-                        TimelineModel.cutAudio(selectedAudio)
-                    }
-                }
-                item {
-                    ToolButton("Paste", Icons.Default.ContentPaste, enabled = true) {
-                        TimelineModel.pasteAudioAtPlayhead()
-                    }
-                }
-                item {
-                    ToolButton("Delete", Icons.Default.Delete, enabled = true) {
-                        TimelineModel.deleteAudio(selectedAudio)
-                    }
-                }
-                item {
-                    ToolButton("Back to video", Icons.Default.VideoLibrary, enabled = true) {
-                        TimelineModel.setActiveTrack(ActiveTrack.VIDEO)
-                    }
-                }
-            }
-        } else {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                item {
-                    ToolButton("AutoCut", Icons.Default.AutoAwesome, enabled = hasVideo && videoTools && !autoCutBusy) {
-                        runAutoCut()
-                    }
-                }
-                item {
-                    // Live background removal on the preview: tap once to turn it on, again to turn it off
-                    ToolButton("Remove BG", Icons.Default.AutoFixNormal, enabled = hasVideo && videoTools) {
+                    ToolButton("Remove BG", Icons.Default.AutoFixNormal, enabled = hasVideo && videoTools, active = showLiveCutout) {
                         showLiveCutout = !showLiveCutout
                         if (showLiveCutout) {
                             showAdjust = false
@@ -1075,10 +1102,7 @@ fun EditorScreen(
                             showTransitions = false
                         }
                     }
-                }
-                item {
-                    // Transition at the start of the selected clip (dissolve, fade from black, flash white)
-                    ToolButton("Transition", Icons.Default.SwapHoriz, enabled = hasSelection && videoTools) {
+                    ToolButton("Transition", Icons.Default.SwapHoriz, enabled = hasSelection && videoTools, active = showTransitions) {
                         showTransitions = !showTransitions
                         if (showTransitions) {
                             showAdjust = false
@@ -1087,8 +1111,29 @@ fun EditorScreen(
                         }
                     }
                 }
-                item {
-                    ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools) {
+
+                "overlay" -> {
+                    ToolButton("Add sticker", Icons.Default.Image, enabled = hasVideo) {
+                        showStickerLibrary = true
+                    }
+                    if (stickerMode) {
+                        ToolButton("Size", Icons.Default.Straighten, enabled = true, active = showStickerSize) {
+                            showStickerSize = !showStickerSize
+                        }
+                        ToolButton("Trim start", Icons.Default.FirstPage, enabled = true) {
+                            StickerTrack.trimStartToPlayhead(selectedSticker, playhead)
+                        }
+                        ToolButton("Trim end", Icons.Default.LastPage, enabled = true) {
+                            StickerTrack.trimEndToPlayhead(selectedSticker, playhead)
+                        }
+                        ToolButton("Delete", Icons.Default.Delete, enabled = true) {
+                            StickerTrack.delete(selectedSticker)
+                        }
+                    }
+                }
+
+                "filter" -> {
+                    ToolButton("Adjust", Icons.Default.Tune, enabled = hasVideo && videoTools, active = showAdjust) {
                         showAdjust = !showAdjust
                         if (showAdjust) {
                             showEffects = false
@@ -1096,71 +1141,44 @@ fun EditorScreen(
                             showTransitions = false
                         }
                     }
-                }
-                item {
-                    ToolButton("Effects", Icons.Default.Palette, enabled = hasVideo && videoTools) {
-                        showEffects = !showEffects
-                        if (showEffects) {
-                            showAdjust = false
-                            showLiveCutout = false
-                            showTransitions = false
-                        }
+                    ToolButton("Reset colour", Icons.Default.Undo, enabled = hasVideo && videoTools) {
+                        VideoAdjustStore.reset()
                     }
                 }
-                item {
-                    ToolButton("Speed", Icons.Default.Speed, enabled = hasSelection && videoTools) {
-                        showSpeedBar = !showSpeedBar
-                    }
-                }
-                item {
-                    ToolButton("Volume", Icons.Default.VolumeUp, enabled = hasSelection && videoTools) {
-                        showVolumeBar = !showVolumeBar
-                    }
-                }
-                item {
-                    ToolButton("Split", Icons.Default.CallSplit, enabled = hasVideo && videoTools) {
-                        TimelineModel.splitAtPlayhead()
-                    }
-                }
-                item {
-                    ToolButton("Trim start", Icons.Default.FirstPage, enabled = hasSelection && videoTools) {
-                        TimelineModel.trimStartToPlayhead()
-                    }
-                }
-                item {
-                    ToolButton("Trim end", Icons.Default.LastPage, enabled = hasSelection && videoTools) {
-                        TimelineModel.trimEndToPlayhead()
-                    }
-                }
-                item {
-                    ToolButton("Copy", Icons.Default.ContentCopy, enabled = hasSelection && videoTools) {
-                        TimelineModel.copySelected()
-                    }
-                }
-                item {
-                    ToolButton("Cut", Icons.Default.ContentCut, enabled = hasSelection && videoTools) {
-                        TimelineModel.cutSelected()
-                    }
-                }
-                item {
-                    ToolButton("Paste", Icons.Default.ContentPaste, enabled = hasVideo && videoTools) {
-                        TimelineModel.pasteAtPlayhead()
-                    }
-                }
-                item {
-                    ToolButton("Delete", Icons.Default.Delete, enabled = hasSelection && videoTools) {
-                        TimelineModel.deleteSelected()
-                    }
-                }
-                item {
-                    ToolButton("Extract audio", Icons.Default.MusicNote, enabled = hasSelection && videoTools && !extracting) {
-                        extractAudio()
-                    }
-                }
-                item {
-                    ToolButton("Rotate", Icons.Default.RotateRight, enabled = true) {
-                        viewModel.rotate()
-                    }
+            }
+        }
+
+        // --- CATEGORY BAR (fixed at the bottom, like the editor's main menu) ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(BarBg)
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            categories.forEach { (key, label, icon) ->
+                val on = tab == key
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { tab = key }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = label,
+                        tint = if (on) Color.White else Muted,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = label,
+                        fontSize = 10.sp,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) Color.White else Muted
+                    )
                 }
             }
         }
@@ -1207,7 +1225,7 @@ fun EditorScreen(
             title = { Text("Exporting video", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Rendering video, audio, text and stickers...", fontSize = 12.sp, color = Color(0xFFA0A0B2))
+                    Text("Rendering video, audio, text and stickers...", fontSize = 12.sp, color = Muted)
                     Spacer(modifier = Modifier.height(12.dp))
                     LinearProgressIndicator(
                         progress = { exportProgress / 100f },
@@ -1231,14 +1249,43 @@ fun EditorScreen(
     }
 }
 
+/** A track label on the left of a track row: an icon and a short name, the same height as the track. */
+@Composable
+private fun TrackLabel(
+    height: Dp,
+    icon: ImageVector,
+    text: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .width(LabelW)
+            .height(height)
+            .clip(RoundedCornerShape(10.dp))
+            .background(LabelBg)
+            .clickable { onClick() }
+    ) {
+        Icon(imageVector = icon, contentDescription = text, tint = tint, modifier = Modifier.size(18.dp))
+        Text(text = text, fontSize = 9.sp, color = Color(0xFFD4D4DE), maxLines = 1)
+    }
+}
+
 @Composable
 private fun ToolButton(
     label: String,
     icon: ImageVector,
     enabled: Boolean,
+    active: Boolean = false,
     onClick: () -> Unit
 ) {
-    val tint = if (enabled) Color(0xFFD4D4DE) else Color(0xFF4A4A58)
+    val tint = when {
+        !enabled -> Color(0xFF4A4A58)
+        active -> Color(0xFFFF5238)
+        else -> Color(0xFFD4D4DE)
+    }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
